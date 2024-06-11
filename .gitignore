@@ -1,0 +1,15 @@
+.venv
+__pycache__
+.figures
+data
+results
+log*
+wandb
+.vscode
+.tmp
+artifacts
+lightning_logs
+.ipynb_checkpoints
+.DS_Store
+build
+*.egg-info
