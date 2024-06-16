@@ -1,4 +1,3 @@
-import os
 import torch
 import torch.nn.functional as F
 from abstract_gradient_training import bound_utils
@@ -19,29 +18,6 @@ def propagate_affine(x_l, x_u, W_l, W_u, b_l, b_u):
 
 def propagate_matmul(A_l, A_u, B_l, B_u):
     """
-    Compute an interval bound on the matrix multiplication A @ B.
-    """
-    bound_utils.validate_interval(A_l, A_u)
-    bound_utils.validate_interval(B_l, B_u)
-    assert A_l.dim() >= 2, "A must be at least a 2D tensor"
-    assert B_l.dim() >= 2, "B must be at least a 2D tensor"
-
-    matmul_mode = os.environ.get("INTERVAL_MATMUL", "rump")
-
-    if matmul_mode == "exact":
-        return propagate_matmul_exact(A_l, A_u, B_l, B_u)
-    elif matmul_mode == "rump":
-        return propagate_matmul_rump(A_l, A_u, B_l, B_u)
-    elif matmul_mode == "nguyen":
-        return propagate_matmul_nguyen(A_l, A_u, B_l, B_u)
-    elif matmul_mode == "distributive":
-        return propagate_matmul_distributive(A_l, A_u, B_l, B_u)
-    else:
-        raise ValueError(f"Unknown interval matmul mode: {matmul_mode}")
-
-
-def propagate_matmul_rump(A_l, A_u, B_l, B_u):
-    """
     Compute an interval bound on the matrix multiplication A @ B using Rump's algorithm.
     """
     bound_utils.validate_interval(A_l, A_u)
@@ -55,104 +31,6 @@ def propagate_matmul_rump(A_l, A_u, B_l, B_u):
     H_r = torch.abs(A_mu) @ B_r + A_r @ torch.abs(B_mu) + A_r @ B_r
     H_l = H_mu - H_r
     H_u = H_mu + H_r
-
-    bound_utils.validate_interval(H_l, H_u)
-    return H_l, H_u
-
-
-def propagate_matmul_exact(A_l, A_u, B_l, B_u):
-    """
-    Compute exact interval bounds on the matrix multiplication A @ B using exact interval arithmetic.
-    """
-    bound_utils.validate_interval(A_l, A_u)
-    bound_utils.validate_interval(B_l, B_u)
-    E_l, E_u = propagate_elementwise(A_l.unsqueeze(-1), A_u.unsqueeze(-1), B_l.unsqueeze(-3), B_u.unsqueeze(-3))
-    bound_utils.validate_interval(E_l, E_u)
-    return E_l.sum(-2), E_u.sum(-2)
-
-
-def propagate_matmul_distributive(A_l, A_u, B_l, B_u):
-    """
-    Compute interval bounds on the matrix multiplication A @ B using distributive interval arithmetic.
-    """
-    bound_utils.validate_interval(A_l, A_u)
-    bound_utils.validate_interval(B_l, B_u)
-    # convert intervals from [l, u] form to [midpoint, absolute value] form
-    A_mid = (A_l + A_u) / 2
-    A_abs = (A_u - A_l) / 2 + A_mid.abs()
-    B_mid = (B_l + B_u) / 2
-    B_abs = (B_u - B_l) / 2 + B_mid.abs()
-    # then compute the elementwise product A.unsqueeze(-1) * B.unsqueeze(-3) using distributive interval multiplication
-    H_mid = A_mid.unsqueeze(-1) * B_mid.unsqueeze(-3)
-    H_abs = A_abs.unsqueeze(-1) * B_abs.unsqueeze(-3)
-    # now sum over the last dimension using distributive interval addition
-    H_mid = H_mid.sum(-2)
-    H_abs = H_abs.sum(-2)
-    # convert back to [l, u] form
-    H_rad = H_abs - H_mid.abs()
-    H_l = H_mid - H_rad
-    H_u = H_mid + H_rad
-    bound_utils.validate_interval(H_l, H_u)
-    return H_l, H_u
-
-
-def propagate_matmul_nguyen(A_l, A_u, B_l, B_u):
-    """
-    Computes the interval bounds on the matrix multiplication A @ B given bounds on A and B using
-    a decomposition of A into two intervals A^0 and A^* such that
-    - A^0 is a zero-centered interval
-    - A^* is an interval that does not contain zero
-    """
-    bound_utils.validate_interval(A_l, A_u)
-    bound_utils.validate_interval(B_l, B_u)
-    # A0 is an interval centered at zero
-    A0_l, A0_u = torch.zeros_like(A_l), torch.zeros_like(A_l)
-    # Astar is an interval not containing zero.
-    # we further split Astar into its negative and positive parts
-    Astar_neg_l, Astar_neg_u = torch.zeros_like(A_l), torch.zeros_like(A_l)
-    Astar_pos_l, Astar_pos_u = torch.zeros_like(A_l), torch.zeros_like(A_l)
-
-    # case where A_l * A_u >= 0
-    condition = (A_l >= 0) & (A_u >= 0)
-    Astar_pos_l = torch.where(condition, A_l, Astar_pos_l)
-    Astar_pos_u = torch.where(condition, A_u, Astar_pos_u)
-    condition = (A_l <= 0) & (A_u <= 0)
-    Astar_neg_l = torch.where(condition, A_l, Astar_neg_l)
-    Astar_neg_u = torch.where(condition, A_u, Astar_neg_u)
-
-    # case where A_l < 0 < |A_l| <= A_u
-    condition = (A_l < 0) & (torch.abs(A_l) <= A_u)
-    A0_l = torch.where(condition, A_l, A0_l)
-    A0_u = torch.where(condition, -A_l, A0_u)
-    Astar_pos_u = torch.where(condition, A_l + A_u, Astar_pos_u)
-
-    # case where A_l < 0 < A_u < |A_l|
-    condition = (A_l < 0) & (0 < A_u) & (A_u < torch.abs(A_l))
-    A0_l = torch.where(condition, -A_u, A0_l)
-    A0_u = torch.where(condition, A_u, A0_u)
-    Astar_neg_l = torch.where(condition, A_l + A_u, Astar_neg_l)
-
-    assert torch.allclose(A_l, A0_l + Astar_pos_l + Astar_neg_l)
-    assert torch.allclose(A_u, A0_u + Astar_pos_u + Astar_neg_u)
-    assert torch.allclose(A0_l + A0_u, torch.zeros_like(A0_l))
-    assert torch.all((Astar_neg_l <= 0) & (Astar_neg_u <= 0))
-    assert torch.all((Astar_pos_l >= 0) & (Astar_pos_u >= 0))
-
-    # compute the interval A0 @ B
-    H_u = A0_u @ torch.maximum(torch.abs(B_l), torch.abs(B_u))
-    H_l = -H_u
-
-    # split the matrix B into its negative and positive parts
-    B_neg_l, B_neg_u = torch.clamp(B_l, max=0), torch.clamp(B_u, max=0)
-    B_pos_l, B_pos_u = torch.clamp(B_l, min=0), torch.clamp(B_u, min=0)
-
-    # compute the interval Astar_pos @ B
-    H_l += Astar_pos_l @ B_pos_l + Astar_pos_u @ B_neg_l
-    H_u += Astar_pos_u @ B_pos_u + Astar_pos_l @ B_neg_u
-
-    # compute the interval Astar_neg @ B
-    H_l += Astar_neg_l @ B_pos_u + Astar_neg_u @ B_neg_u
-    H_u += Astar_neg_u @ B_pos_l + Astar_neg_l @ B_neg_l
 
     bound_utils.validate_interval(H_l, H_u)
     return H_l, H_u

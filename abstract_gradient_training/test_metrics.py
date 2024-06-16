@@ -3,19 +3,7 @@ import torch.nn.functional as F
 
 from abstract_gradient_training import nominal_pass
 from abstract_gradient_training.bounds import interval_bound_propagation as ibp
-
-
-def evaluate_network(param_n, param_l, param_u, dl_test, loss, model=None, transform=None):
-    """
-    Calculate evaluation metrics given the current bounds on the parameters.
-    """
-    if loss == "mse":
-        return test_mse(param_n, param_l, param_u, dl_test, model, transform)
-    elif loss in ["cross_entropy", "binary_cross_entropy", "max_margin", "hinge"]:
-        return test_accuracy(param_n, param_l, param_u, dl_test, model, transform)
-    else:
-        raise ValueError("Loss function {loss} not recognized.")
-
+from abstract_gradient_training import loss_gradient_bounds
 
 def test_mse(param_n, param_l, param_u, dl_test, model=None, transform=None, epsilon=0.0):
     """
@@ -109,7 +97,7 @@ def test_accuracy(param_n, param_l, param_u, dl_test, model=None, transform=None
     return min_accuracy, accuracy, max_accuracy
 
 
-def testCrossEntropy(param_n, param_l, param_u, dl_test, model=None, transform=None, epsilon=0.0):
+def test_cross_entropy(param_n, param_l, param_u, dl_test, model=None, transform=None, epsilon=0.0):
     """
     Calculate the best, worst and nominal cross entropy loss of the network on the test set.
     Parameters:

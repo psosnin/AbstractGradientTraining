@@ -13,3 +13,4 @@ lightning_logs
 .DS_Store
 build
 *.egg-info
+*.ckpt

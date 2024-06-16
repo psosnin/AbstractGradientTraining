@@ -11,14 +11,14 @@ class SGD:
 
     def __init__(self, param_n, config):
         # just leave param_n as an argument to match the call signature of other optimizers.
-        self.lr = config["learning_rate"]
+        self.lr = config.learning_rate
         # get regularisation parameters
-        self.l1_reg = config["l1_reg"]
-        self.l2_reg = config["l2_reg"]
+        self.l1_reg = config.l1_reg
+        self.l2_reg = config.l2_reg
         # If these parameters are left to default, the optimizer will behave like a standard SGD with constant
         # learning rate. If you set these parameters, then the learning rate will decay like
         # lr = max(lr / (1 + sqrt(decay_rate * epoch), lr_min)
-        optimizer_kwargs = config["optimizer_kwargs"]
+        optimizer_kwargs = config.optimizer_kwargs
         self.decay_rate = optimizer_kwargs.get("decay_rate", 0)
         self.lr_min = optimizer_kwargs.get("lr_min", 0.0)
         self.epoch = 0
@@ -51,53 +51,6 @@ class SGD:
         return param_n, param_l, param_u
 
 
-class SafeSGD:
-    """
-    A class implementing the SGD update step with an adaptive learning rate based on the size of the width of the 
-    bound on the gradient update.
-    The learning rate for each parameter is scaled elementwise such that lr * bound_width = constant or clamped to the
-    range [lr_min, lr_max]. This ensures that the bound on the updated parameters grows linearly and predictably.
-    """
-
-    def __init__(self, param_n, config):
-        # just leave param_n as an argument to match the call signature of other optimizers.
-        # get regularisation parameters
-        self.l1_reg = config["l1_reg"]
-        self.l2_reg = config["l2_reg"]
-        optimizer_kwargs = config["optimizer_kwargs"]
-        self.lr_min = optimizer_kwargs["lr_min"]
-        self.lr_max = optimizer_kwargs["lr_max"]
-        self.update_size = optimizer_kwargs["update_size"]
-
-    def step(self, param_n, param_l, param_u, update_n, update_l, update_u, sound=True):
-        """
-        Compute a sound bound on parameters after an SGD update
-            param_n = param_n - learning_rate * update_n.
-        Sound=True checks that param_n falls within the bounds after each update.
-        Sound=False only checks if the bounds are a valid interval.
-        """
-        param_n, param_l, param_u = l2Update(param_n, param_l, param_u, self.l2_reg, sound=sound)
-        param_n, param_l, param_u = l1Update(param_n, param_l, param_u, self.l1_reg, sound=sound)
-        for i in range(len(param_n)):
-            width = update_u[i] - update_l[i]
-            lr = self.update_size / (width + 1e-20)  # to avoid divide by zero
-            lr = torch.clamp(lr, min=self.lr_min, max=self.lr_max)
-            print(lr.mean())
-            # apply the parameter update
-            param_n[i] -= lr * update_n[i]
-            param_l[i] -= lr * update_u[i]
-            param_u[i] -= lr * update_l[i]
-            if sound:
-                bound_utils.validate_interval(param_l[i], param_n[i])
-                bound_utils.validate_interval(param_n[i], param_u[i])
-                # NOTE: This line fixes some floating point issues, but is there is a serious infraction of the bounds then
-                # the validation functions above will log an error
-                # param_n[i] = torch.clamp(param_n[i], min=param_l[i], max=param_u[i])
-            else:
-                bound_utils.validate_interval(param_l[i], param_u[i])
-        return param_n, param_l, param_u
-
-
 class ADAM:
     """
     A class implementing the ADAM update step. We must use a class instead of a function to allow for persistent
@@ -107,10 +60,10 @@ class ADAM:
 
     def __init__(self, param_n, config):
         # get regularisation parameters
-        self.l1_reg = config["l1_reg"]
-        self.l2_reg = config["l2_reg"]
+        self.l1_reg = config.l1_reg
+        self.l2_reg = config.l2_reg
         # get ADAM hyperparameters
-        optimizer_kwargs = config["optimizer_kwargs"]
+        optimizer_kwargs = config.optimizer_kwargs
         self.beta1 = optimizer_kwargs["beta1"]
         self.beta2 = optimizer_kwargs["beta2"]
         self.epsilon = optimizer_kwargs["epsilon"]

@@ -15,6 +15,7 @@ setup(
       'torch', 
       'tqdm',
       'torchvision',
+      'pydantic'
     ],
     platforms=['any'],
 )
