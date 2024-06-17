@@ -1,12 +1,15 @@
+"""Helper functions for certified training."""
+
+from __future__ import annotations
+from typing import Iterator
+
 import logging
 import torch
+from torch.utils.data import DataLoader
 
 from abstract_gradient_training import interval_arithmetic
 from abstract_gradient_training.certified_training.configuration import AGTConfig
 
-"""
-Helper functions for certified training.
-"""
 
 def grads_helper(
     batch_l: torch.Tensor,
@@ -20,7 +23,7 @@ def grads_helper(
     """
     Helper function to calculate bounds on the gradient of the loss function with respect to all parameters given the
     input and parameter bounds.
-    
+
     Args:
         batch_l (torch.Tensor): [fragsize x input_dim x 1] tensor of inputs to the network.
         batch_u (torch.Tensor): [fragsize x input_dim x 1] tensor of inputs to the network.
@@ -44,29 +47,33 @@ def grads_helper(
     k_label_poison = config.label_k_poison if label_poison else 0
     poison_target = config.poison_target if label_poison else -1
     # forward pass through the network with bounds
-    logit_l, logit_u, inter_l, inter_u = forward_bound_fn(
-        param_l, param_u, batch_l, batch_u, **bound_kwargs
-    )
+    logit_l, logit_u, inter_l, inter_u = forward_bound_fn(param_l, param_u, batch_l, batch_u, **bound_kwargs)
     # calculate the first partial derivative of the loss function
     # (pass logit_u in as a dummy for logit_n and ignore dL_n)
     dL_l, dL_u, _ = loss_bound_fn(
-        logit_l, logit_u, logit_u, labels, k_label_poison=k_label_poison,
-        label_epsilon=label_epsilon, poison_target=poison_target
+        logit_l,
+        logit_u,
+        logit_u,
+        labels,
+        k_label_poison=k_label_poison,
+        label_epsilon=label_epsilon,
+        poison_target=poison_target,
     )
     # compute backwards pass through the network with bounds
-    grad_min, grad_max = backward_bound_fn(
-        dL_l, dL_u, param_l, param_u, inter_l, inter_u, **bound_kwargs
-    )
+    grad_min, grad_max = backward_bound_fn(dL_l, dL_u, param_l, param_u, inter_l, inter_u, **bound_kwargs)
 
     return grad_min, grad_max
 
 
-def break_condition(evaluation):
+def break_condition(evaluation: tuple[float, float, float]) -> bool:
     """
     Check whether to terminate the certified training loop based on the bounds on the test metric (MSE or Accuracy).
-    eval[0] = worst case eval
-    eval[1] = nominal eval
-    eval[2] = best case eval
+
+    Args:
+        evaluation: tuple of the (worst case, nominal case, best case) evaluation of the test metric.
+
+    Returns:
+        bool: True if the training should stop, False otherwise.
     """
     if evaluation[0] <= 0.03 and evaluation[2] >= 0.97:  # worst case accuracy bounds too loose
         logging.warning("Early stopping due to loose bounds")
@@ -74,11 +81,21 @@ def break_condition(evaluation):
     if evaluation[0] >= 1e2:  # worst case MSE too large
         logging.warning("Early stopping due to loose bounds")
         return True
+    return False
 
 
-def get_parameters(model):
+def get_parameters(model: torch.nn.Sequential) -> tuple[list[torch.Tensor], list[torch.Tensor], list[torch.Tensor]]:
     """
-    Get the parameters of the dense layers of the pytorch model.
+    Get the parameters of only the dense layers of the pytorch model. This function assumes that all dense layers
+    are at the end of the model separated by activation functions only.
+
+    Args:
+        model (torch.nn.Sequential): Pytorch model to extract the parameters from.
+
+    Returns:
+        tuple[list[torch.Tensor], list[torch.Tensor], list[torch.Tensor]]: Tuple of lists of the network parameters
+            [W1, b1, ..., Wn, bn] for the network, the lower bounds of the parameters, and the upper bounds of the
+            parameters.
     """
     param_n = [(l.weight, l.bias) for l in model.modules() if isinstance(l, torch.nn.Linear)]  # get linear params
     param_n = [item for sublist in param_n for item in sublist]  # flatten the list
@@ -89,10 +106,21 @@ def get_parameters(model):
     return param_n, param_l, param_u
 
 
-def propagate_conv_layers(x, model, epsilon):
+def propagate_conv_layers(
+    x: torch.Tensor, model: torch.nn.Sequential, epsilon: float
+) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Propagate an input batch through the convolutional layers of a model. Here we assume that the conv layers are all
     at the start of the network with ReLU activations after each one.
+
+    Args:
+        x (torch.Tensor): [batchsize x input_dim x 1] tensor of inputs to the network.
+        model (torch.nn.Sequential): Pytorch model to extract the parameters from.
+        epsilon (float): Epsilon value for the interval propagation.
+
+    Returns:
+        tuple[torch.Tensor, torch.Tensor]: Tuple of the lower bounds and upper bounds of the output of the
+                                           convolutional layers of the network.
     """
     # get the parameters of the conv layers
     conv_layers = [l for l in model.modules() if isinstance(l, torch.nn.Conv2d)]
@@ -107,7 +135,7 @@ def propagate_conv_layers(x, model, epsilon):
     return x_l.unsqueeze(-1), x_u.unsqueeze(-1)
 
 
-def dataloader_wrapper(dl_train, n_epochs):
+def dataloader_wrapper(dl_train: DataLoader, n_epochs: int) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
     """
     Return a new generator that iterates over the training dataloader for a fixed number of epochs.
     This includes a check to ensure that each batch is full and ignore any incomplete batches.
@@ -123,16 +151,18 @@ def dataloader_wrapper(dl_train, n_epochs):
             # initialise the batchsize variable if this is the first iteration
             if full_batchsize is None:
                 full_batchsize = batch.size(0)
-                logging.debug("Initialising dataloader batchsize to {}", full_batchsize)
+                logging.debug("Initialising dataloader batchsize to %s", full_batchsize)
             # check the batch is the correct size, otherwise skip it
             if batch.size(0) != full_batchsize:
-                logging.debug("Skipping incomplete batch {} in epoch {}", t, n)
+                logging.debug("Skipping incomplete batch %s in epoch %s", t, n)
                 continue
             # return the batches for this iteration
             yield batch, labels
-            
 
-def dataloader_pair_wrapper(dl_train, dl_clean, n_epochs):
+
+def dataloader_pair_wrapper(
+    dl_train: DataLoader, dl_clean: DataLoader, n_epochs: int
+) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
     """
     Return a new generator that iterates over the training dataloaders for a fixed number of epochs.
     For each combined batch, we return one batch from the clean dataloader and one batch from the poisoned dataloader.
@@ -161,12 +191,11 @@ def dataloader_pair_wrapper(dl_train, dl_clean, n_epochs):
             # initialise the batchsize variable if this is the first iteration
             if full_batchsize is None:
                 full_batchsize = batch.size(0)
-                logging.debug("Initialising dataloader batchsize to {}", full_batchsize)
+                logging.debug("Initialising dataloader batchsize to %s", full_batchsize)
             # check the batch is the correct size, otherwise skip it
             if batch.size(0) != full_batchsize:
                 logging.debug(
-                    "Skipping incomplete batch {} in epoch {} (expected batchsize {}, got {})",
-                    t, n, full_batchsize, batch_len
+                    "Skipping batch %s in epoch %s (expected batchsize %s, got %s)", t, n, full_batchsize, batch_len
                 )
                 continue
             # return the batches for this iteration

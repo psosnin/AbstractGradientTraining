@@ -1,24 +1,50 @@
+"""Certified privacy training."""
+
+from __future__ import annotations
+from typing import Optional, Callable
 import logging
+
 import torch
 from tqdm import tqdm
+from torch.utils.data import DataLoader
 
 from abstract_gradient_training import nominal_pass
 from abstract_gradient_training.certified_training import utils as ct_utils
-from abstract_gradient_training import bound_utils
-from abstract_gradient_training import test_metrics
+from abstract_gradient_training import interval_arithmetic
+from abstract_gradient_training.certified_training.configuration import AGTConfig
 
 
 @torch.no_grad()
-def privacy_certified_training(model, config, dl_train, dl_test, transform=None):
+def privacy_certified_training(
+    model: torch.nn.Sequential,
+    config: AGTConfig,
+    dl_train: DataLoader,
+    dl_test: DataLoader,
+    transform: Optional[Callable] = None,
+) -> tuple[list[torch.Tensor], list[torch.Tensor], list[torch.Tensor]]:
     """
-    Train the neural network using dp-sgd and certified privacy.
+    Train the dense layers of a neural network with the given config and return the privacy-certified bounds
+    on the parameters.
+
     NOTE: The returned nominal parameters are not guaranteed to be inside the parameter bounds if dp_sgd is used.
-    Parameters:
-        model: neural network model
-        config: configuration dictionary
-        dl_train: dataloader for the training set
-        dl_test: dataloader for the test set
-        transform: optional transform to apply to the input data (e.g. propagating through fixed conv layers)
+
+    Args:
+        model (torch.nn.Sequential): Neural network model. Must be a torch.nn.Sequential object with dense layers and
+                                     ReLU activations only. The model may have other layers (e.g. convolutional layers)
+                                     before the dense section, but these must be fixed and are not trained. If fixed
+                                     non-dense layers are provided, then the transform function must be set to propagate
+                                     bounds through these layers.
+        config (AGTConfig): Configuration object for the abstract gradient training module. See the configuration module
+                            for more details.
+        dl_train (DataLoader): Training data loader.
+        dl_test (DataLoader): Testing data loader.
+        transform (Optional[Callable], optional): Optional function to propagate bounds through fixed layers of the
+                                                  neural network (e.g. convolutional layers). Defaults to None.
+
+    Returns:
+        param_l (list[torch.Tensor]): List of lower bounds of the trained parameters [W1, b1, ..., Wn, bn].
+        param_n (list[torch.Tensor]): List of nominal trained parameters [W1, b1, ..., Wn, bn].
+        param_u (list[torch.Tensor]): List of upper bounds of the trained parameters [W1, b1, ..., Wn, bn].
     """
 
     # initialise hyperparameters, model, data, optimizer, logging
@@ -49,7 +75,7 @@ def privacy_certified_training(model, config, dl_train, dl_test, transform=None)
         )
         # get if we should terminate training early
         if ct_utils.break_condition(network_eval):
-            return param_l, param_n, param_u, network_eval
+            return param_l, param_n, param_u
         # we want the shape to be [batchsize x input_dim x 1]
         if transform is None:
             batch = batch.view(batch.size(0), -1, 1).type(param_n[-1].dtype)
@@ -72,7 +98,9 @@ def privacy_certified_training(model, config, dl_train, dl_test, transform=None)
             logit_n, inter_n = nominal_pass.nominal_forward_pass(batch_frag, param_n)
             _, _, dL_n = loss_bound_fn(logit_n, logit_n, logit_n, label_frag)
             frag_grads_n = nominal_pass.nominal_backward_pass(dL_n, param_n, inter_n)
-            frag_grads_l, frag_grads_u = ct_utils.grads_helper(batch_frag, batch_frag, label_frag, param_l, param_u, config)
+            frag_grads_l, frag_grads_u = ct_utils.grads_helper(
+                batch_frag, batch_frag, label_frag, param_l, param_u, config
+            )
 
             # clip the gradients
             frag_grads_l = [torch.clamp(g, -gamma, gamma) for g in frag_grads_l]
@@ -116,14 +144,16 @@ def privacy_certified_training(model, config, dl_train, dl_test, transform=None)
         # check bounds and add noise
         for i in range(len(grads_n)):
             if sigma == 0.0:  # sound update
-                bound_utils.validate_interval(grads_l[i], grads_n[i])
-                bound_utils.validate_interval(grads_n[i], grads_u[i])
+                interval_arithmetic.validate_interval(grads_l[i], grads_n[i])
+                interval_arithmetic.validate_interval(grads_n[i], grads_u[i])
             else:  # unsound update due to noise
-                bound_utils.validate_interval(grads_l[i], grads_u[i])
+                interval_arithmetic.validate_interval(grads_l[i], grads_u[i])
             grads_n[i] += torch.normal(torch.zeros_like(grads_n[i]), sigma * gamma)
 
-        param_n, param_l, param_u = optimizer.step(
-            param_n, param_l, param_u, grads_n, grads_l, grads_u, sound=False
-        )
+        param_n, param_l, param_u = optimizer.step(param_n, param_l, param_u, grads_n, grads_l, grads_u, sound=False)
+
+    for i in range(len(param_n)):
+        if (param_l[i] > param_n[i]).all() or (param_n[i] > param_u[i]).all():
+            logging.warning("Nominal parameters not within certified bounds for parameter %s due to DP-SGD.", i)
 
     return param_l, param_n, param_u

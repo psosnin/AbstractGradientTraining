@@ -1,14 +1,28 @@
+"""Poison certified training."""
+
+from __future__ import annotations
 import logging
+from typing import Optional, Callable
+
 import torch
 from tqdm import tqdm
+from torch.utils.data import DataLoader
 
+from abstract_gradient_training.certified_training.configuration import AGTConfig
 from abstract_gradient_training.certified_training import utils as ct_utils
 from abstract_gradient_training import nominal_pass
-from abstract_gradient_training import bound_utils
-from abstract_gradient_training import test_metrics
+from abstract_gradient_training import interval_arithmetic
+
 
 @torch.no_grad()
-def poison_certified_training(model, config, dl_train, dl_test, dl_clean=None, transform=None):
+def poison_certified_training(
+    model: torch.nn.Sequential,
+    config: AGTConfig,
+    dl_train: DataLoader,
+    dl_test: DataLoader,
+    dl_clean: Optional[DataLoader] = None,
+    transform: Optional[Callable] = None,
+) -> tuple[list[torch.Tensor], list[torch.Tensor], list[torch.Tensor]]:
     """
     Train the neural network while tracking lower and upper bounds on all the parameters under a possible poisoning
     attack.
@@ -53,7 +67,7 @@ def poison_certified_training(model, config, dl_train, dl_test, dl_clean=None, t
     training_iterator = ct_utils.dataloader_pair_wrapper(dl_train, dl_clean, n_epochs)
     training_iterator = tqdm(training_iterator, desc="Training Batch", disable=quiet)
 
-    for t, (batch, labels, batch_clean, labels_clean) in enumerate(training_iterator):
+    for batch, labels, batch_clean, labels_clean in training_iterator:
         # evaluate the network and log the results to tqdm
         network_eval = test_loss_fn(param_n, param_l, param_u, dl_test, model, transform)
         training_iterator.set_postfix_str(
@@ -61,7 +75,7 @@ def poison_certified_training(model, config, dl_train, dl_test, dl_clean=None, t
         )
         # possibly terminate early
         if ct_utils.break_condition(network_eval):
-            return param_l, param_n, param_u, network_eval
+            return param_l, param_n, param_u
 
         # calculate batchsize
         batchsize = batch.size(0) if batch_clean is None else batch.size(0) + batch_clean.size(0)
@@ -125,11 +139,12 @@ def poison_certified_training(model, config, dl_train, dl_test, dl_clean=None, t
             )
             # calculate differences between the input+weight perturbed and weight perturbed bounds
             diffs_l = [a - b for a, b in zip(grads_input_weight_perturb_l, grads_weight_perturb_l)]  # -ve
-            diffs_l = [torch.topk(a, k_poison, dim=0, largest=False)[0] for a in diffs_l]
-            [g.append(d) for g, d in zip(grads_diffs_l, diffs_l)]
             diffs_u = [a - b for a, b in zip(grads_input_weight_perturb_u, grads_weight_perturb_u)]  # +ve
-            diffs_u = [torch.topk(a, k_poison, dim=0)[0] for a in diffs_u]
-            [g.append(d) for g, d in zip(grads_diffs_u, diffs_u)]
+
+            # accumulate and store the the top-k diffs from each fragment
+            for i in range(len(grads_n)):
+                grads_diffs_l[i].append(torch.topk(diffs_l[i], k_poison, dim=0, largest=False)[0])
+                grads_diffs_u[i].append(torch.topk(diffs_u[i], k_poison, dim=0)[0])
 
         # accumulate the top-k diffs from each fragment then add the overall top-k diffs to the gradient bounds
         grads_diffs_l = [torch.cat(g, dim=0) for g in grads_diffs_l]
@@ -137,8 +152,8 @@ def poison_certified_training(model, config, dl_train, dl_test, dl_clean=None, t
         for i in range(len(grads_n)):
             grads_l[i] += torch.topk(grads_diffs_l[i], k_poison, dim=0, largest=False)[0].sum(dim=0)
             grads_u[i] += torch.topk(grads_diffs_u[i], k_poison, dim=0)[0].sum(dim=0)
-            bound_utils.validate_interval(grads_l[i], grads_n[i])
-            bound_utils.validate_interval(grads_n[i], grads_u[i])
+            interval_arithmetic.validate_interval(grads_l[i], grads_n[i])
+            interval_arithmetic.validate_interval(grads_n[i], grads_u[i])
 
         # normalise each by the batchsize
         grads_l = [g / batchsize for g in grads_l]

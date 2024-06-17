@@ -1,25 +1,51 @@
+"""Certified unlearning training."""
+
+from __future__ import annotations
+from typing import Optional, Callable
 import logging
 import math
+
 import torch
 from tqdm import tqdm
+from torch.utils.data import DataLoader
 
 from abstract_gradient_training import nominal_pass
 from abstract_gradient_training.certified_training import utils as ct_utils
-from abstract_gradient_training import bound_utils
-from abstract_gradient_training import test_metrics
+from abstract_gradient_training import interval_arithmetic
+from abstract_gradient_training.certified_training.configuration import AGTConfig
 
 
 @torch.no_grad()
-def unlearning_certified_training(model, config, dl_train, dl_test, transform=None):
+def unlearning_certified_training(
+    model: torch.nn.Sequential,
+    config: AGTConfig,
+    dl_train: DataLoader,
+    dl_test: DataLoader,
+    transform: Optional[Callable] = None,
+) -> tuple[list[torch.Tensor], list[torch.Tensor], list[torch.Tensor]]:
     """
-    Train the neural network and get certified unlearning bounds.
-    Parameters:
-        model: neural network model
-        config: configuration dictionary
-        dl_train: dataloader for the training set
-        dl_test: dataloader for the test set
-        transform: optional transform to apply to the input data (e.g. propagating through fixed conv layers)
+    Train the dense layers of a neural network with the given config and return the unlearning-certified bounds
+    on the parameters.
+
+    Args:
+        model (torch.nn.Sequential): Neural network model. Must be a torch.nn.Sequential object with dense layers and
+                                     ReLU activations only. The model may have other layers (e.g. convolutional layers)
+                                     before the dense section, but these must be fixed and are not trained. If fixed
+                                     non-dense layers are provided, then the transform function must be set to propagate
+                                     bounds through these layers.
+        config (AGTConfig): Configuration object for the abstract gradient training module. See the configuration module
+                            for more details.
+        dl_train (DataLoader): Training data loader.
+        dl_test (DataLoader): Testing data loader.
+        transform (Optional[Callable], optional): Optional function to propagate bounds through fixed layers of the
+                                                  neural network (e.g. convolutional layers). Defaults to None.
+
+    Returns:
+        param_l (list[torch.Tensor]): List of lower bounds of the trained parameters [W1, b1, ..., Wn, bn].
+        param_n (list[torch.Tensor]): List of nominal trained parameters [W1, b1, ..., Wn, bn].
+        param_u (list[torch.Tensor]): List of upper bounds of the trained parameters [W1, b1, ..., Wn, bn].
     """
+
     # initialise hyperparameters, model, data, optimizer, logging
     device = torch.device(config.device)
     dtype = dl_train.dataset[0][0].dtype
@@ -36,7 +62,7 @@ def unlearning_certified_training(model, config, dl_train, dl_test, transform=No
     gamma = config.clip_gamma
     sigma = config.dp_sgd_sigma
     noise_level = 0.0 if math.isnan(sigma * gamma) else sigma * gamma  # to account for gamma = inf
-    sound = (noise_level == 0.0)
+    sound = noise_level == 0.0
 
     # returns an iterator of length n_epochs x batches_per_epoch to handle incomplete batch logic
     training_iterator = ct_utils.dataloader_wrapper(dl_train, n_epochs)
@@ -50,7 +76,7 @@ def unlearning_certified_training(model, config, dl_train, dl_test, transform=No
         )
         # get if we should terminate training early
         if ct_utils.break_condition(network_eval):
-            return param_l, param_n, param_u, network_eval
+            return param_l, param_n, param_u
         # we want the shape to be [batchsize x input_dim x 1]
         if transform is None:
             batch = batch.view(batch.size(0), -1, 1).type(param_n[-1].dtype)
@@ -120,14 +146,12 @@ def unlearning_certified_training(model, config, dl_train, dl_test, transform=No
         # check bounds and add noise
         for i in range(len(grads_n)):
             if sound:
-                bound_utils.validate_interval(grads_l[i], grads_n[i])
-                bound_utils.validate_interval(grads_n[i], grads_u[i])
+                interval_arithmetic.validate_interval(grads_l[i], grads_n[i])
+                interval_arithmetic.validate_interval(grads_n[i], grads_u[i])
             else:
-                bound_utils.validate_interval(grads_l[i], grads_u[i])
+                interval_arithmetic.validate_interval(grads_l[i], grads_u[i])
             grads_n[i] += torch.normal(torch.zeros_like(grads_n[i]), noise_level)
 
-        param_n, param_l, param_u = optimizer.step(
-            param_n, param_l, param_u, grads_n, grads_l, grads_u, sound=sound
-        )
+        param_n, param_l, param_u = optimizer.step(param_n, param_l, param_u, grads_n, grads_l, grads_u, sound=sound)
 
-    return param_l, param_n, param_u, network_eval
+    return param_l, param_n, param_u

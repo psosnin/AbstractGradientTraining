@@ -1,27 +1,40 @@
+"""Linear bound propagation (CROWN)."""
+
+from __future__ import annotations
 from typing import Optional
 
 import torch
 from abstract_gradient_training.interval_tensor import IntervalTensor
-from abstract_gradient_training import bound_utils
+from abstract_gradient_training.bounds import bound_utils
 
 
 @torch.no_grad()
-def bound_forward_pass(param_l, param_u, x0_l, x0_u, relu_lb="zero", **kwargs):
+def bound_forward_pass(
+    param_l: list[torch.Tensor],
+    param_u: list[torch.Tensor],
+    x0_l: torch.Tensor,
+    x0_u: torch.Tensor,
+    relu_lb: str = "zero",
+    **kwargs,
+) -> tuple[torch.Tensor, torch.Tensor, list[torch.Tensor], list[torch.Tensor]]:
     """
-    Compute intermediate bounds on the network using the abstract transformer implementation of the CROWN algorithm
-    given the input domain.
-    Parameters:
-        param_l: list of lower bounds on the parameters of the network [W1, b1, ..., Wm, bm]
-        param_u: list of upper bounds on the parameters of the network [W1, b1, ..., Wm, bm]
-        x0_l: [batchsize x input_dim x 1] lower bound on the input batch to the network
-        x0_u: [batchsize x input_dim x 1] upper bound on the input batch to the network
-        relu_lb: lower bound to use for the ReLU activation (one of "zero", "one", "parallel")
+    Given bounds on the parameters of the neural network and an interval over the input, compute bounds on the logits
+    and intermediate activations of the network using the double-interval crown algorithm
+
+    Args:
+        param_l (list[torch.Tensor]): list of lower bounds on the parameters of the network [W1, b1, ..., Wm, bm]
+        param_u (list[torch.Tensor]): list of upper bounds on the parameters of the network [W1, b1, ..., Wm, bm]
+        x0_l (torch.Tensor): [batchsize x input_dim x 1] Lower bound on the input to the network.
+        x0_u (torch.Tensor): [batchsize x input_dim x 1] Upper bound on the input to the network.
+        relu_lb (str): lower bound to use for the ReLU activation (one of "zero", "one", "parallel")
+
     Returns:
-        logit_l: lower bounds on the logits
-        logit_u: upper bounds on the logits
-        inter_l: list of lower bounds on the intermediate activations (input interval, then post-relu bounds)
-        inter_u: list of upper bounds on the intermediate activations (input interval, then post-relu bounds)
+        logit_l (torch.Tensor): lower bounds on the logits
+        logit_u (torch.Tensor): upper bounds on the logits
+        inter_l (list[torch.Tensor]): list of lower bounds on the (post-relu) intermediate activations [x0, ..., xL-1]
+        inter_u (list[torch.Tensor]): list of upper bounds on the (post-relu) intermediate activations [x0, ..., xL-1]
     """
+
     # validate the input
     param_l, param_u, x0_l, x0_u = bound_utils.validate_forward_bound_input(param_l, param_u, x0_l, x0_u)
 
@@ -31,11 +44,11 @@ def bound_forward_pass(param_l, param_u, x0_l, x0_u, relu_lb="zero", **kwargs):
 
     # initialise the input node
     input_interval = IntervalTensor(x0_l, x0_u)
-    x = CrownNode(None, None, None, None, None,  input_interval)
+    x = CrownNode(None, None, None, None, None, input_interval)
     bounds = [input_interval]
 
     # perform forward pass
-    for (Wk, bk) in zip(W, b):
+    for Wk, bk in zip(W, b):
         xhat = AffineNode(x, Wk, bk)
         x = ReLUNode(xhat, relu_lb=relu_lb)
         bounds.append(xhat.concretize().relu())
@@ -49,20 +62,31 @@ def bound_forward_pass(param_l, param_u, x0_l, x0_u, relu_lb="zero", **kwargs):
     return logit_l, logit_u, inter_l, inter_u
 
 
-@torch.no_grad()
-def bound_backward_pass(dL_min, dL_max, param_l, param_u, inter_l, inter_u, **kwargs):
+def bound_backward_pass(
+    dL_min: torch.Tensor,
+    dL_max: torch.Tensor,
+    param_l: list[torch.Tensor],
+    param_u: list[torch.Tensor],
+    inter_l: list[torch.Tensor],
+    inter_u: list[torch.Tensor],
+    **kwargs,
+) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
     """
-    Compute bounds on the gradient using the abstract transformer implementation of the CROWN algorithm.
-    Parameters:
-        dL_min: [batchsize x output_dim x 1] lower bound on the gradient of the loss with respect to the logits
-        dL_max: [batchsize x output_dim x 1] upper bound on the gradient of the loss with respect to the logits
-        param_l: list of lower bounds on the weights and biases given as a list [W1, b1, ..., Wm, bm]
-        param_u: list of upper bounds on the weights and biases given as a list [W1, b1, ..., Wm, bm]
-        inter_l: list of lower bounds on the intermediate activations given as a list [x0, ..., xL]
-        inter_u: list of upper bounds on the intermediate activations given as a list [x0, ..., xL]
+    Given bounds on the parameters, intermediate activations and the first partial derivative of the loss, compute
+    bounds on the gradients of the loss with respect to the parameters of the network using double-interval crown
+    algorithm.
+
+    Args:
+        dL_min (torch.Tensor): lower bound on the gradient of the loss with respect to the logits
+        dL_max (torch.Tensor): upper bound on the gradient of the loss with respect to the logits
+        param_l (list[torch.Tensor]): list of lower bounds on the parameters [W1, b1, ..., Wm, bm]
+        param_u (list[torch.Tensor]): list of upper bounds on the parameters [W1, b1, ..., Wm, bm]
+        inter_l (list[torch.Tensor]): list of lower bounds on the (post-relu) intermediate activations [x0, ..., xL-1]
+        inter_u (list[torch.Tensor]): list of upper bounds on the (post-relu) intermediate activations [x0, ..., xL-1]
+
     Returns:
-        grads_l: list of lower bounds on the gradients given as a list [dW1, db1, ..., dWm, dbm]
-        grads_u: list of upper bounds on the gradients given as a list [dW1, db1, ..., dWm, dbm]
+        grads_l (list[torch.Tensor]): list of lower bounds on the gradients given as a list [dW1, db1, ..., dWm, dbm]
+        grads_u (list[torch.Tensor]): list of upper bounds on the gradients given as a list [dW1, db1, ..., dWm, dbm]
     """
     # validate the input
     dL_min, dL_max, param_l, param_u, inter_l, inter_u = bound_utils.validate_backward_bound_input(
@@ -98,19 +122,38 @@ class CrownNode:
         out_var <= Lambda @ in_var + delta <= upper
         out_var >= Omega @ in_var + theta >= lower
     where the coefficients Lambda, Omega and biases delta, theta are all intervals.
+
+    Example:
+        Given a sequence of nodes x0 => x1 => x2, the following linear equalities hold for all x0 in x0.conc:
+            x1.Lambda @ x0 + x1.delta <= x1 <= x1.Lambda @ x0 + x1.delta
+            x2.Lambda @ x1 + x2.delta <= x2 <= x2.Lambda @ x1 + x2.delta
+        The backpropagation procedure then uses linear bound propagation to compute a set of linear inequalities from
+        x2 to x0:
+            Omega0 @ x0 + theta0 <= x0 <= Lambda0 @ x0 + delta0
+        where Omega0, theta0, Lambda0, delta0 are computed from the backpropagation procedure.
+
     NOTE: The backpropagation procedure in this node can handle general linear bounds, but can be made much more
-    efficient for specific cases, e.g. when Lambda = Omega or diagonal Lambda, Omega.
+    efficient for specific cases, e.g. when Lambda = Omega or diagonal for Lambda, Omega.
     """
 
-    def __init__(self, in_var, Lambda, delta, Omega, theta, conc=None):
+    def __init__(
+        self,
+        in_var: Optional[CrownNode],
+        Lambda: Optional[IntervalTensor],
+        delta: Optional[IntervalTensor],
+        Omega: Optional[IntervalTensor],
+        theta: Optional[IntervalTensor],
+        conc: Optional[IntervalTensor] = None,
+    ):
         """
-        Parameters:
-            in_var: CrownNode representing the input node
-            Lambda: IntervalTensor representing bounds on the coefficient matrix Lambda
-            delta: IntervalTensor representing bounds on the bias delta
-            Omega: IntervalTensor representing bounds on the coefficient matrix Omega
-            theta: IntervalTensor representing bounds on the bias theta
-            conc: IntervalTensor representing concrete bounds on this node
+        Initialise the CrownNode with the given linear bounds relating the output to input of the node.
+        Args:
+            in_var (Optional[CrownNode]): CrownNode representing the input node
+            Lambda (Optional[IntervalTensor]): Bounds on the coefficient matrix Lambda
+            delta (Optional[IntervalTensor]): Bounds on the bias delta
+            Omega (Optional[IntervalTensor]): Bounds on the coefficient matrix Omega
+            theta (Optional[IntervalTensor]): Bounds on the bias theta
+            conc (Optional[IntervalTensor]): Bounds on the concretization of this node
         """
         assert isinstance(Lambda, Optional[IntervalTensor])
         assert isinstance(Omega, Optional[IntervalTensor])
@@ -133,7 +176,7 @@ class CrownNode:
             assert len(self.theta.shape) == 3
 
     @torch.no_grad()
-    def backpropagate(self):
+    def backpropagate(self) -> None:
         """
         Backpropagate the linear bounds from this node back to the input node x0 to get linear bounds of the form
             Omega0 @ x0 + theta0 <= out_var <= Lambda0 @ x0 + delta0
@@ -145,17 +188,17 @@ class CrownNode:
         cur = self.in_var
         # backpropagate the bounds from the current node to its input node, until we reach a node without an input
         while cur.in_var is not None:
-            theta0 = cur._backpropTheta(Omega0, theta0)
-            delta0 = cur._backpropDelta(Lambda0, delta0)
-            Lambda0, delta0 = cur._backpropLambda(Lambda0, delta0)
-            Omega0, theta0 = cur._backpropOmega(Omega0, theta0)
+            theta0 = cur.backprop_Theta(Omega0, theta0)
+            delta0 = cur.backprop_Delta(Lambda0, delta0)
+            Lambda0, delta0 = cur.backprop_Lambda(Lambda0, delta0)
+            Omega0, theta0 = cur.backprop_Omega(Omega0, theta0)
             cur = cur.in_var
         # concretize the bounds using the concrete bounds on cur, which should now be the input variable
         upper = (Lambda0 @ cur.conc + delta0).ub
         lower = (Omega0 @ cur.conc + theta0).lb
         self.conc = IntervalTensor(lower, upper)
 
-    def concretize(self):
+    def concretize(self) -> IntervalTensor:
         """
         Return a tuple of concrete lower and upper bounds on the value of this node.
         """
@@ -163,62 +206,60 @@ class CrownNode:
             self.backpropagate()
         return self.conc
 
-    def _backpropLambda(self, Lambda0, delta0):
+    def backprop_Lambda(self, Lambda0: IntervalTensor, delta0: torch.Tensor) -> tuple[IntervalTensor, torch.Tensor]:
         """
         Helper function for the backpropagation procedure that computes the new Lambda0 using
             Lambda0 = ((Lambda0 * Lambda) * (Lambda0 > 0) + (Lambda0 * Omega) * (Lambda0 < 0)).sum()
         """
         # compute sign masks
-        pos_mask = (Lambda0.lb.unsqueeze(-1) > 0)  # lower bound greater than 0
-        neg_mask = (Lambda0.ub.unsqueeze(-1) < 0)  # upper bound less than 0
+        pos_mask = Lambda0.lb.unsqueeze(-1) > 0  # lower bound greater than 0
+        neg_mask = Lambda0.ub.unsqueeze(-1) < 0  # upper bound less than 0
         arb_mask = (Lambda0.lb <= 0) & (Lambda0.ub >= 0)  # sign arbitrary
         # handle case where Lambda0 spans 0
         delta0 = delta0 + ((Lambda0 * arb_mask) @ self.concretize()).ub
         # handle cases where the sign of Lambda0 is fixed
-        Lambda0 = (
-            ((Lambda0.unsqueeze(-1) * self.Lambda.unsqueeze(1)) * pos_mask).sum(-2) +
-            ((Lambda0.unsqueeze(-1) * self.Omega.unsqueeze(1)) * neg_mask).sum(-2)
-        )
+        Lambda0 = ((Lambda0.unsqueeze(-1) * self.Lambda.unsqueeze(1)) * pos_mask).sum(-2) + (
+            (Lambda0.unsqueeze(-1) * self.Omega.unsqueeze(1)) * neg_mask
+        ).sum(-2)
         return Lambda0, delta0
 
-    def _backpropOmega(self, Omega0, theta0):
+    def backprop_Omega(self, Omega0: IntervalTensor, theta0: torch.Tensor) -> tuple[IntervalTensor, torch.Tensor]:
         """
         Helper function for the backpropagation procedure that computes the new Omega0 using
             Omega0 = ((Omega0 * Omega) * (Omega0 > 0) + (Omega0 * Lambda) * (Omega0 < 0)).sum()
         """
-        pos_mask = (Omega0.lb.unsqueeze(-1) > 0)
-        neg_mask = (Omega0.ub.unsqueeze(-1) < 0)
+        pos_mask = Omega0.lb.unsqueeze(-1) > 0
+        neg_mask = Omega0.ub.unsqueeze(-1) < 0
         arb_mask = (Omega0.lb <= 0) & (Omega0.ub >= 0)
         # handle case where Omega0 spans 0
         theta0 = theta0 + ((Omega0 * arb_mask) @ self.concretize()).lb
         # handle cases where the sign of Omega0 is fixed
-        Omega0 = (
-            ((Omega0.unsqueeze(-1) * self.Omega.unsqueeze(1)) * pos_mask).sum(-2) +
-            ((Omega0.unsqueeze(-1) * self.Lambda.unsqueeze(1)) * neg_mask).sum(-2)
-        )
+        Omega0 = ((Omega0.unsqueeze(-1) * self.Omega.unsqueeze(1)) * pos_mask).sum(-2) + (
+            (Omega0.unsqueeze(-1) * self.Lambda.unsqueeze(1)) * neg_mask
+        ).sum(-2)
         return Omega0, theta0
 
-    def _backpropDelta(self, Lambda0, delta0):
+    def backprop_Delta(self, Lambda0: IntervalTensor, delta0: torch.Tensor) -> torch.Tensor:
         """
         Helper function for the backpropagation procedure that computes the new delta0 using
             delta0 = delta0 + ((Lambda0 * delta) * (Lambda0 > 0) + (Lambda0 * theta) * (Lambda0 < 0)).sum()
         """
-        # the case where the sign of Lambda0 is arbitrary is already accounted for in the _backpropLambda function
+        # the case where the sign of Lambda0 is arbitrary is already accounted for in the backprop_Lambda function
         delta0 = delta0 + (
-            (Lambda0.unsqueeze(-1) * self.delta.unsqueeze(1) * (Lambda0.lb.unsqueeze(-1) > 0)).sum(-2).ub +
-            (Lambda0.unsqueeze(-1) * self.theta.unsqueeze(1) * (Lambda0.ub.unsqueeze(-1) < 0)).sum(-2).ub
+            (Lambda0.unsqueeze(-1) * self.delta.unsqueeze(1) * (Lambda0.lb.unsqueeze(-1) > 0)).sum(-2).ub
+            + (Lambda0.unsqueeze(-1) * self.theta.unsqueeze(1) * (Lambda0.ub.unsqueeze(-1) < 0)).sum(-2).ub
         )
         return delta0
 
-    def _backpropTheta(self, Omega0, theta0):
+    def backprop_Theta(self, Omega0: IntervalTensor, theta0: torch.Tensor) -> torch.Tensor:
         """
         Helper function for the backpropagation procedure that computes the new theta0 using
             theta0 = theta0 + ((Omega0 * theta) * (Omega0 > 0) + (Omega0 * delta) * (Omega0 < 0)).sum()
         """
-        # the case where the sign of Omega0 is arbitrary is already accounted for in the _backpropOmega function
+        # the case where the sign of Omega0 is arbitrary is already accounted for in the backprop_Omega function
         theta0 = theta0 + (
-            (Omega0.unsqueeze(-1) * self.theta.unsqueeze(1) * (Omega0.lb.unsqueeze(-1) > 0)).sum(-2).lb +
-            (Omega0.unsqueeze(-1) * self.delta.unsqueeze(1) * (Omega0.ub.unsqueeze(-1) < 0)).sum(-2).lb
+            (Omega0.unsqueeze(-1) * self.theta.unsqueeze(1) * (Omega0.lb.unsqueeze(-1) > 0)).sum(-2).lb
+            + (Omega0.unsqueeze(-1) * self.delta.unsqueeze(1) * (Omega0.ub.unsqueeze(-1) < 0)).sum(-2).lb
         )
         return theta0
 
@@ -232,15 +273,15 @@ class AffineNode(CrownNode):
             out_var >= Omega @ in_var + theta = W @ in_var + b >= lower
     """
 
-    def __init__(self, in_var, W, b=None):
+    def __init__(self, in_var: CrownNode, W: IntervalTensor, b: Optional[IntervalTensor] = None):
         """
-        Parameters:
-        in_var: CrownNode representing the input node
-        W: tuple (W_l, W_u) representing bounds on the weight matrix
-        b: tuple (b_l, b_u) representing bounds on the delta
+        Args:
+            in_var (CrownNode): CrownNode representing the input node
+            W (IntervalTensor): Bounds on the weight matrix
+            b (Optional[IntervalTensor]): Bounds on the bias
         """
         device = W[0].get_device()
-        device = torch.device(device) if device != -1 else torch.device('cpu')
+        device = torch.device(device) if device != -1 else torch.device("cpu")
         if b is None:
             b = IntervalTensor.zeros(W.shape[-2], 1, dtype=W.dtype, device=device)
         # add batch dimension to the node
@@ -249,7 +290,7 @@ class AffineNode(CrownNode):
         self.in_var = in_var
         super().__init__(in_var, self.W, self.b.ub, self.W, self.b.lb)
 
-    def _backpropLambda(self, Lambda0, delta0):
+    def backprop_Lambda(self, Lambda0: IntervalTensor, delta0: torch.Tensor) -> tuple[IntervalTensor, torch.Tensor]:
         """
         Helper function for the backpropagation procedure that computes the new Lambda0
         """
@@ -260,7 +301,7 @@ class AffineNode(CrownNode):
         Lambda0 = (Lambda0 * (~arb_mask)) @ self.W
         return Lambda0, delta0
 
-    def _backpropOmega(self, Omega0, theta0):
+    def backprop_Omega(self, Omega0: IntervalTensor, theta0: torch.Tensor) -> tuple[IntervalTensor, torch.Tensor]:
         """
         Helper function for the backpropagation procedure that computes the new Omega0
         """
@@ -281,14 +322,15 @@ class ReLUNode(CrownNode):
     This allows for more efficient backpropagation.
     """
 
-    def __init__(self, in_var, relu_lb="zero"):
+    def __init__(self, in_var: CrownNode, relu_lb: str = "zero"):
         """
-        Parameters:
-            in_var: CrownNode input to the ReLU node
+        Args:
+            in_var (CrownNode): Input to the ReLU node
+            relu_lb (str): Lower bound to use for the ReLU activation (one of "zero", "one", "parallel")
         """
         x = in_var.concretize()
         device = x.get_device()
-        device = torch.device(device) if device != -1 else torch.device('cpu')
+        device = torch.device(device) if device != -1 else torch.device("cpu")
 
         # relu activation sets
         I_pos = torch.where(x.lb > 0)
@@ -304,7 +346,7 @@ class ReLUNode(CrownNode):
         self.alpha_u[I_pos] = 1
         self.alpha_l[I_pos] = 1
         self.alpha_u[I] = (x.ub / (x.ub - x.lb))[I]
-        beta_u[I] = - x.lb[I]
+        beta_u[I] = -x.lb[I]
 
         if relu_lb == "one":
             self.alpha_l[I] = 1
@@ -325,26 +367,24 @@ class ReLUNode(CrownNode):
 
         super().__init__(in_var, Lambda, delta, Omega, theta)
 
-    def _backpropLambda(self, Lambda0, delta0):
+    def backprop_Lambda(self, Lambda0: IntervalTensor, delta0: torch.Tensor) -> tuple[IntervalTensor, torch.Tensor]:
         """
         Helper function for the backpropagation procedure that computes the new Lambda0
         """
         delta0 += ((Lambda0 * ((Lambda0.ub >= 0) & (Lambda0.lb <= 0))) @ self.concretize()).ub
-        Lambda0 = (
-            (Lambda0 * self.alpha_u.transpose(-2, -1)) * (Lambda0.lb > 0) +
-            (Lambda0 * self.alpha_l.transpose(-2, -1)) * (Lambda0.ub < 0)
-        )
+        Lambda0 = (Lambda0 * self.alpha_u.transpose(-2, -1)) * (Lambda0.lb > 0) + (
+            Lambda0 * self.alpha_l.transpose(-2, -1)
+        ) * (Lambda0.ub < 0)
         return Lambda0, delta0
 
-    def _backpropOmega(self, Omega0, theta0):
+    def backprop_Omega(self, Omega0: IntervalTensor, theta0: torch.Tensor) -> tuple[IntervalTensor, torch.Tensor]:
         """
         Helper function for the backpropagation procedure that computes the new Omega0
         """
         theta0 += ((Omega0 * ((Omega0.ub >= 0) & (Omega0.lb <= 0))) @ self.concretize()).lb
-        Omega0 = (
-            (Omega0 * self.alpha_l.transpose(-2, -1)) * (Omega0.lb > 0) +
-            (Omega0 * self.alpha_u.transpose(-2, -1)) * (Omega0.ub < 0)
-        )
+        Omega0 = (Omega0 * self.alpha_l.transpose(-2, -1)) * (Omega0.lb > 0) + (
+            Omega0 * self.alpha_u.transpose(-2, -1)
+        ) * (Omega0.ub < 0)
         return Omega0, theta0
 
 
@@ -355,10 +395,11 @@ class MulNode(CrownNode):
     so we can use tricks from the ReLUNode and the AffineNode.
     """
 
-    def __init__(self, in_var, s):
+    def __init__(self, in_var: CrownNode, s: IntervalTensor):
         """
-        Parameters:
-        in_var: CrownNode representing the input node
+        Args:
+            in_var (CrownNode): representing the input node
+            s (IntervalTensor): Bounds on the elementwise multiplication
         """
         # Validate input
         assert isinstance(s, IntervalTensor)
@@ -367,30 +408,30 @@ class MulNode(CrownNode):
         # define the diagonal matrix Lambda from s
         Lambda = IntervalTensor(
             torch.diag_embed(self.s.lb.flatten(start_dim=1), dim1=-2, dim2=-1),
-            torch.diag_embed(self.s.ub.flatten(start_dim=1), dim1=-2, dim2=-1)
+            torch.diag_embed(self.s.ub.flatten(start_dim=1), dim1=-2, dim2=-1),
         )
         super().__init__(in_var, Lambda, delta, Lambda, delta)
 
-    def _backpropLambda(self, Lambda0, delta0):
+    def backprop_Lambda(self, Lambda0: IntervalTensor, delta0: torch.Tensor) -> tuple[IntervalTensor, torch.Tensor]:
         """
         Helper function for the backpropagation procedure that computes the new Lambda0
         """
         return Lambda0 * self.s.transpose(-2, -1), delta0
 
-    def _backpropOmega(self, Omega0, theta0):
+    def backprop_Omega(self, Omega0: IntervalTensor, theta0: torch.Tensor) -> tuple[IntervalTensor, torch.Tensor]:
         """
         Helper function for the backpropagation procedure that computes the new Omega0
         """
         return Omega0 * self.s.transpose(-2, -1), theta0
 
-    def _backpropDelta(self, Lambda0, delta0):
+    def backprop_Delta(self, Lambda0: IntervalTensor, delta0: torch.Tensor) -> torch.Tensor:
         """
         Helper function for the backpropagation procedure that computes the new delta0. The bias for this node is zero
         so we simply pass the current delta0 forward.
         """
         return delta0
 
-    def _backpropTheta(self, Omega0, theta0):
+    def backprop_Theta(self, Omega0: IntervalTensor, theta0: torch.Tensor) -> torch.Tensor:
         """
         Helper function for the backpropagation procedure that computes the new theta0. The bias for this node is zero
         so we simply pass the current theta0 forward.
