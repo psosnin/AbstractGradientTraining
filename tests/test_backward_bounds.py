@@ -36,31 +36,31 @@ def test_backward_bounds_regression(shape, epsilon, backward_bound, batchsize, l
     input_bounds = (x - epsilon, x + epsilon)
     targets = 1 - 2 * torch.randn(size=(batchsize, 1, 1)).double()
     # perform the nominal pass
-    logit_n, inter_n = nominal_pass.nominal_forward_pass(x, param_n)
-    loss = loss_fn[0](logit_n, targets, reduction="none")
-    _, _, dL = loss_fn[1](logit_n, logit_n, logit_n, targets)
-    grad_n = nominal_pass.nominal_backward_pass(dL, param_n, inter_n)
+    activations_n = nominal_pass.nominal_forward_pass(x, param_n)
+    loss = loss_fn[0](activations_n[-1], targets, reduction="none")
+    _, _, dL = loss_fn[1](activations_n[-1], activations_n[-1], activations_n[-1], targets)
+    grad_n = nominal_pass.nominal_backward_pass(dL, param_n, activations_n)
     # check that the nominal pass matches torch.autograd
-    for j in range(inter_n[0].shape[0]):
+    for j in range(activations_n[0].shape[0]):  # iterate over batch dimension
         for i, P in enumerate(param_n):
             g = torch.autograd.grad(loss[j], P, retain_graph=True)[0]
             assert torch.allclose(g, grad_n[i][j]), f"{i}, {g - grad_n[i][j]}"
     # perform the bounding pass with interval over the input
-    logit_l, logit_u, inter_l, inter_u = ibp.bound_forward_pass(param_n, param_n, *input_bounds)
-    dL_l, dL_u, _ = loss_fn[1](logit_l, logit_u, logit_n, targets)
-    grad_min, grad_max = backward_bound(dL_l, dL_u, param_n, param_n, inter_l, inter_u)
+    activations_l, activations_u = ibp.bound_forward_pass(param_n, param_n, *input_bounds)
+    dL_l, dL_u, _ = loss_fn[1](activations_l[-1], activations_u[-1], activations_n[-1], targets)
+    grad_min, grad_max = backward_bound(dL_l, dL_u, param_n, param_n, activations_l, activations_u)
     utils.validate_sound(grad_min, grad_n)
     utils.validate_sound(grad_n, grad_max)
     # perform the bounding pass with interval over the parameters
-    logit_l, logit_u, inter_l, inter_u = ibp.bound_forward_pass(param_l, param_u, x, x)
-    dL_l, dL_u, _ = loss_fn[1](logit_l, logit_u, logit_n, targets)
-    grad_min, grad_max = backward_bound(dL_l, dL_u, param_l, param_u, inter_l, inter_u)
+    activations_l, activations_u = ibp.bound_forward_pass(param_l, param_u, x, x)
+    dL_l, dL_u, _ = loss_fn[1](activations_l[-1], activations_u[-1], activations_n[-1], targets)
+    grad_min, grad_max = backward_bound(dL_l, dL_u, param_l, param_u, activations_l, activations_u)
     utils.validate_sound(grad_min, grad_n)
     utils.validate_sound(grad_n, grad_max)
     # perform the bounding pass with interval over the input and parameters
-    logit_l, logit_u, inter_l, inter_u = ibp.bound_forward_pass(param_l, param_u, *input_bounds)
-    dL_l, dL_u, _ = loss_fn[1](logit_l, logit_u, logit_n, targets)
-    grad_min, grad_max = backward_bound(dL_l, dL_u, param_l, param_u, inter_l, inter_u)
+    activations_l, activations_u = ibp.bound_forward_pass(param_l, param_u, *input_bounds)
+    dL_l, dL_u, _ = loss_fn[1](activations_l[-1], activations_u[-1], activations_n[-1], targets)
+    grad_min, grad_max = backward_bound(dL_l, dL_u, param_l, param_u, activations_l, activations_u)
     utils.validate_sound(grad_min, grad_n)
     utils.validate_sound(grad_n, grad_max)
 
@@ -88,35 +88,36 @@ def test_backward_bounds_binary_classification(shape, epsilon, backward_bound, b
     input_bounds = (x - epsilon, x + epsilon)
     targets = torch.randint(0, shape[-1], size=(batchsize,))
     # perform the nominal pass
-    logit_n, inter_n = nominal_pass.nominal_forward_pass(x, param_n)
-    if loss_fn[0] == torch.nn.functional.hinge_embedding_loss:
+    activations_n = nominal_pass.nominal_forward_pass(x, param_n)
+    logit_n = activations_n[-1]
+    if loss_fn[0] is torch.nn.functional.hinge_embedding_loss:
         hinge_targets = 2 * targets - 1
         loss = loss_fn[0](logit_n.flatten(start_dim=1).double(), hinge_targets[:, None].double(), reduction="none")
     else:
         loss = loss_fn[0](logit_n.flatten(start_dim=1).double(), targets[:, None].double(), reduction="none")
     _, _, dL = loss_fn[1](logit_n, logit_n, logit_n, targets)
-    grad_n = nominal_pass.nominal_backward_pass(dL, param_n, inter_n)
+    grad_n = nominal_pass.nominal_backward_pass(dL, param_n, activations_n)
     # check that the nominal pass matches torch.autograd
-    for j in range(inter_n[0].shape[0]):
+    for j in range(activations_n[0].shape[0]):
         for i, P in enumerate(param_n):
             g = torch.autograd.grad(loss[j], P, retain_graph=True)[0]
             assert torch.allclose(g, grad_n[i][j]), f"{i}, {g - grad_n[i][j]}"
     # perform the bounding pass with interval over the input
-    logit_l, logit_u, inter_l, inter_u = ibp.bound_forward_pass(param_n, param_n, *input_bounds)
-    dL_l, dL_u, _ = loss_fn[1](logit_l, logit_u, logit_n, targets)
-    grad_min, grad_max = backward_bound(dL_l, dL_u, param_n, param_n, inter_l, inter_u)
+    activations_l, activations_u = ibp.bound_forward_pass(param_n, param_n, *input_bounds)
+    dL_l, dL_u, _ = loss_fn[1](activations_l[-1], activations_u[-1], activations_n[-1], targets)
+    grad_min, grad_max = backward_bound(dL_l, dL_u, param_n, param_n, activations_l, activations_u)
     utils.validate_sound(grad_min, grad_n)
     utils.validate_sound(grad_n, grad_max)
     # perform the bounding pass with interval over the parameters
-    logit_l, logit_u, inter_l, inter_u = ibp.bound_forward_pass(param_l, param_u, x, x)
-    dL_l, dL_u, _ = loss_fn[1](logit_l, logit_u, logit_n, targets)
-    grad_min, grad_max = backward_bound(dL_l, dL_u, param_l, param_u, inter_l, inter_u)
+    activations_l, activations_u = ibp.bound_forward_pass(param_l, param_u, x, x)
+    dL_l, dL_u, _ = loss_fn[1](activations_l[-1], activations_u[-1], activations_n[-1], targets)
+    grad_min, grad_max = backward_bound(dL_l, dL_u, param_l, param_u, activations_l, activations_u)
     utils.validate_sound(grad_min, grad_n)
     utils.validate_sound(grad_n, grad_max)
     # perform the bounding pass with interval over the input and parameters
-    logit_l, logit_u, inter_l, inter_u = ibp.bound_forward_pass(param_l, param_u, *input_bounds)
-    dL_l, dL_u, _ = loss_fn[1](logit_l, logit_u, logit_n, targets)
-    grad_min, grad_max = backward_bound(dL_l, dL_u, param_l, param_u, inter_l, inter_u)
+    activations_l, activations_u = ibp.bound_forward_pass(param_l, param_u, *input_bounds)
+    dL_l, dL_u, _ = loss_fn[1](activations_l[-1], activations_u[-1], activations_n[-1], targets)
+    grad_min, grad_max = backward_bound(dL_l, dL_u, param_l, param_u, activations_l, activations_u)
     utils.validate_sound(grad_min, grad_n)
     utils.validate_sound(grad_n, grad_max)
 
@@ -144,30 +145,31 @@ def test_backward_bounds_classification(shape, epsilon, backward_bound, batchsiz
     input_bounds = (x - epsilon, x + epsilon)
     targets = torch.randint(0, shape[-1], size=(batchsize,))
     # perform the nominal pass
-    logit_n, inter_n = nominal_pass.nominal_forward_pass(x, param_n)
+    activations_n = nominal_pass.nominal_forward_pass(x, param_n)
+    logit_n = activations_n[-1]
     loss = loss_fn[0](logit_n.flatten(start_dim=1), targets, reduction="none")
     _, _, dL = loss_fn[1](logit_n, logit_n, logit_n, targets)
-    grad_n = nominal_pass.nominal_backward_pass(dL, param_n, inter_n)
+    grad_n = nominal_pass.nominal_backward_pass(dL, param_n, activations_n)
     # check that the nominal pass matches torch.autograd
-    for j in range(inter_n[0].shape[0]):
+    for j in range(activations_n[0].shape[0]):
         for i, P in enumerate(param_n):
             g = torch.autograd.grad(loss[j], P, retain_graph=True)[0]
             assert torch.allclose(g, grad_n[i][j]), f"{i}, {g - grad_n[i][j]}"
     # perform the bounding pass with interval over the input
-    logit_l, logit_u, inter_l, inter_u = ibp.bound_forward_pass(param_n, param_n, *input_bounds)
-    dL_l, dL_u, _ = loss_fn[1](logit_l, logit_u, logit_n, targets)
-    grad_min, grad_max = backward_bound(dL_l, dL_u, param_n, param_n, inter_l, inter_u)
+    activations_l, activations_u = ibp.bound_forward_pass(param_n, param_n, *input_bounds)
+    dL_l, dL_u, _ = loss_fn[1](activations_l[-1], activations_u[-1], activations_n[-1], targets)
+    grad_min, grad_max = backward_bound(dL_l, dL_u, param_n, param_n, activations_l, activations_u)
     utils.validate_sound(grad_min, grad_n)
     utils.validate_sound(grad_n, grad_max)
     # perform the bounding pass with interval over the parameters
-    logit_l, logit_u, inter_l, inter_u = ibp.bound_forward_pass(param_l, param_u, x, x)
-    dL_l, dL_u, _ = loss_fn[1](logit_l, logit_u, logit_n, targets)
-    grad_min, grad_max = backward_bound(dL_l, dL_u, param_l, param_u, inter_l, inter_u)
+    activations_l, activations_u = ibp.bound_forward_pass(param_l, param_u, x, x)
+    dL_l, dL_u, _ = loss_fn[1](activations_l[-1], activations_u[-1], activations_n[-1], targets)
+    grad_min, grad_max = backward_bound(dL_l, dL_u, param_l, param_u, activations_l, activations_u)
     utils.validate_sound(grad_min, grad_n)
     utils.validate_sound(grad_n, grad_max)
     # perform the bounding pass with interval over the input and parameters
-    logit_l, logit_u, inter_l, inter_u = ibp.bound_forward_pass(param_l, param_u, *input_bounds)
-    dL_l, dL_u, _ = loss_fn[1](logit_l, logit_u, logit_n, targets)
-    grad_min, grad_max = backward_bound(dL_l, dL_u, param_l, param_u, inter_l, inter_u)
+    activations_l, activations_u = ibp.bound_forward_pass(param_l, param_u, *input_bounds)
+    dL_l, dL_u, _ = loss_fn[1](activations_l[-1], activations_u[-1], activations_n[-1], targets)
+    grad_min, grad_max = backward_bound(dL_l, dL_u, param_l, param_u, activations_l, activations_u)
     utils.validate_sound(grad_min, grad_n)
     utils.validate_sound(grad_n, grad_max)

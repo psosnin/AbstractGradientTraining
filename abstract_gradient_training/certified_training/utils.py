@@ -47,20 +47,20 @@ def grads_helper(
     k_label_poison = config.label_k_poison if label_poison else 0
     poison_target = config.poison_target if label_poison else -1
     # forward pass through the network with bounds
-    logit_l, logit_u, inter_l, inter_u = forward_bound_fn(param_l, param_u, batch_l, batch_u, **bound_kwargs)
+    activations_l, activations_u = forward_bound_fn(param_l, param_u, batch_l, batch_u, **bound_kwargs)
     # calculate the first partial derivative of the loss function
     # (pass logit_u in as a dummy for logit_n and ignore dL_n)
     dL_l, dL_u, _ = loss_bound_fn(
-        logit_l,
-        logit_u,
-        logit_u,
+        activations_l[-1],  # logit_l
+        activations_u[-1],
+        activations_u[-1],  # logit_u
         labels,
         k_label_poison=k_label_poison,
         label_epsilon=label_epsilon,
         poison_target=poison_target,
     )
     # compute backwards pass through the network with bounds
-    grad_min, grad_max = backward_bound_fn(dL_l, dL_u, param_l, param_u, inter_l, inter_u, **bound_kwargs)
+    grad_min, grad_max = backward_bound_fn(dL_l, dL_u, param_l, param_u, activations_l, activations_u, **bound_kwargs)
 
     return grad_min, grad_max
 

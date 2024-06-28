@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 
 
-def nominal_forward_pass(x0: torch.Tensor, params: list[torch.Tensor]) -> tuple[torch.Tensor, list[torch.Tensor]]:
+def nominal_forward_pass(x0: torch.Tensor, params: list[torch.Tensor]) -> list[torch.Tensor]:
     """
     Perform the forward pass through the network with the given nominal parameters.
 
@@ -13,23 +13,25 @@ def nominal_forward_pass(x0: torch.Tensor, params: list[torch.Tensor]) -> tuple[
         params (list[torch.Tensor]): List of the nominal parameters of the network [W1, b1, ..., Wn, bn].
 
     Returns:
-        xhat (torch.Tensor): [batchsize x output_dim x 1] tensor of logits
-        x (list[torch.Tensor]): List of the intermediate activations of the network [x0, x1, ..., xn].
+        activations (list[torch.Tensor]): List of tensors [x0, x1, ..., xn] where x0 is the input, xn is the logit and
+                                          x1, ..., xn-1 are the (pre-relu) intermediate activations. Each tensor is of
+                                          shape [batchsize x dim x 1].
     """
 
     assert len(x0.shape) == 3  # this function expects a batched input
     # we want to be able to accept biases as either 1 or 2 dimensional tensors
     params = [p if len(p.shape) == 2 else p.unsqueeze(-1) for p in params]
-    x = [x0]
-    for wk, bk in zip(params[::2], params[1::2]):
-        xhat = wk @ x[-1] + bk
-        x.append(F.relu(xhat))
-    x.pop()  # no relu for last layer
-    return xhat, x
+    activations = [x0]
+    for i, (wk, bk) in enumerate(zip(params[::2], params[1::2])):
+        if i == 0:
+            activations.append(wk @ x0 + bk)  # input doesn't go through relu
+        else:
+            activations.append(wk @ F.relu(activations[-1]) + bk)
+    return activations
 
 
 def nominal_backward_pass(
-    dL: torch.Tensor, params: list[torch.Tensor], inter: list[torch.Tensor]
+    dL: torch.Tensor, params: list[torch.Tensor], activations: list[torch.Tensor]
 ) -> list[torch.Tensor]:
     """
     Perform the backward pass through the network with nominal parameters given dL is the first partial derivative of
@@ -39,23 +41,27 @@ def nominal_backward_pass(
         dL (torch.Tensor): Tensor of shape [batchsize x output_dim x 1] representing the gradient of the loss with
                            respect to the logits of the network.
         params (list[torch.Tensor]): List of the nominal parameters of the network [W1, b1, ..., Wn, bn].
-        inter (list[torch.Tensor]): List of the intermediate activations of the network [x0, x1, ..., xn].
+        activations (list[torch.Tensor]): List of tensors [x0, x1, ..., xn] where x0 is the input, xn is the logit and
+                                          x1, ..., xn-1 are the (pre-relu) intermediate activations. Each tensor is of
+                                          shape [batchsize x dim x 1].
     Returns:
         list[torch.Tensor]: List of gradients of the network [dW1, db1, ..., dWm, dbm]
     """
+    # convert the pre-relu activations to post-relu activations
+    activations = [activations[0]] + [F.relu(x) for x in activations[1:-1]] + [activations[-1]]  # x0, x1, ..., xL-1, xL
 
     # we want to be able to accept biases as either 1 or 2 dimensional tensors
     params = [p if len(p.shape) == 2 else p.unsqueeze(-1) for p in params]
     dL = dL if len(dL.shape) == 3 else dL.unsqueeze(-1)
     W = params[::2]
-    dW = dL @ inter[-1].transpose(-2, -1)
+    dW = dL @ activations[-2].transpose(-2, -1)
     grads = [dL, dW]
 
     # compute gradients for each layer
     for i in range(len(W) - 1, 0, -1):
         dL = W[i].T @ dL
-        dL = dL * torch.sign(inter[i])
-        dW = dL @ inter[i - 1].transpose(-2, -1)
+        dL = dL * torch.sign(activations[i])
+        dW = dL @ activations[i - 1].transpose(-2, -1)
         grads.append(dL)
         grads.append(dW)
 

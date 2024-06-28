@@ -95,9 +95,10 @@ def privacy_certified_training(
             batch_frag = batch_fragments[f].to(device)
             batch_frag = transform(batch_frag, model, 0)[0] if transform else batch_frag
             label_frag = label_fragments[f].to(device)
-            logit_n, inter_n = nominal_pass.nominal_forward_pass(batch_frag, param_n)
+            activations_n = nominal_pass.nominal_forward_pass(batch_frag, param_n)
+            logit_n = activations_n[-1]
             _, _, dL_n = loss_bound_fn(logit_n, logit_n, logit_n, label_frag)
-            frag_grads_n = nominal_pass.nominal_backward_pass(dL_n, param_n, inter_n)
+            frag_grads_n = nominal_pass.nominal_backward_pass(dL_n, param_n, activations_n)
             frag_grads_l, frag_grads_u = ct_utils.grads_helper(
                 batch_frag, batch_frag, label_frag, param_l, param_u, config
             )

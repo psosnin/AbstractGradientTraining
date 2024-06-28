@@ -1,6 +1,6 @@
 """Test metrics and bounding functions."""
 
-from typing import Callable
+from typing import Callable, Optional
 import torch
 import torch.nn.functional as F
 
@@ -13,8 +13,8 @@ def test_mse(
     param_l: list[torch.Tensor],
     param_u: list[torch.Tensor],
     dl_test: torch.utils.data.DataLoader,
-    model: torch.nn.Sequential = None,
-    transform: Callable = None,
+    model: Optional[torch.nn.Sequential] = None,
+    transform: Optional[Callable] = None,
     epsilon: float = 0.0,
 ) -> tuple[float, float, float]:
     """
@@ -42,15 +42,15 @@ def test_mse(
     assert targets.dim() == 1, "Targets must be of shape (batchsize, )"
 
     # for finetuning, we may need to transform the input through the earlier layers of the network
-    if transform:
+    if transform is not None:
         batch_n = transform(batch, model, 0)[0]
         batch_l, batch_u = transform(batch, model, epsilon)
     else:
         batch_n = batch.view(batch.size(0), -1, 1)
         batch_l, batch_u = batch_n - epsilon, batch_n + epsilon
     # nominal, lower and upper bounds for the forward pass
-    logit_n, _ = nominal_pass.nominal_forward_pass(batch_n, param_n)
-    logit_l, logit_u, _, _ = ibp.bound_forward_pass(param_l, param_u, batch_l, batch_u)
+    *_, logit_n = nominal_pass.nominal_forward_pass(batch_n, param_n)
+    (*_, logit_l), (*_, logit_u) = ibp.bound_forward_pass(param_l, param_u, batch_l, batch_u)
     logit_l, logit_n, logit_u = logit_l.squeeze(), logit_n.squeeze(), logit_u.squeeze()
     targets = targets.reshape(logit_l.shape)
     # calculate best and worst case differences
@@ -71,8 +71,8 @@ def test_accuracy(
     param_l: list[torch.Tensor],
     param_u: list[torch.Tensor],
     dl_test: torch.utils.data.DataLoader,
-    model: torch.nn.Sequential = None,
-    transform: Callable = None,
+    model: Optional[torch.nn.Sequential] = None,
+    transform: Optional[Callable] = None,
     epsilon: float = 0.0,
 ) -> tuple[float, float, float]:
     """
@@ -106,8 +106,8 @@ def test_accuracy(
         batch_n = batch.view(batch.size(0), -1, 1)
         batch_l, batch_u = batch_n - epsilon, batch_n + epsilon
     # nominal, lower and upper bounds for the forward pass
-    logit_n, _ = nominal_pass.nominal_forward_pass(batch_n, param_n)
-    logit_l, logit_u, _, _ = ibp.bound_forward_pass(param_l, param_u, batch_l, batch_u)
+    *_, logit_n = nominal_pass.nominal_forward_pass(batch_n, param_n)
+    (*_, logit_l), (*_, logit_u) = ibp.bound_forward_pass(param_l, param_u, batch_l, batch_u)
     logit_l, logit_n, logit_u = logit_l.squeeze(), logit_n.squeeze(), logit_u.squeeze()
     if logit_l.dim() == 1:  # binary classification
         worst_case = (1 - labels) * logit_u + labels * logit_l
@@ -137,8 +137,8 @@ def test_cross_entropy(
     param_l: list[torch.Tensor],
     param_u: list[torch.Tensor],
     dl_test: torch.utils.data.DataLoader,
-    model: torch.nn.Sequential = None,
-    transform: Callable = None,
+    model: Optional[torch.nn.Sequential] = None,
+    transform: Optional[Callable] = None,
     epsilon: float = 0.0,
 ) -> tuple[float, float, float]:
     """
@@ -173,8 +173,8 @@ def test_cross_entropy(
         batch_n = batch.view(batch.size(0), -1, 1)
         batch_l, batch_u = batch_n - epsilon, batch_n + epsilon
     # nominal, lower and upper bounds for the forward pass
-    logit_n, _ = nominal_pass.nominal_forward_pass(batch_n, param_n)
-    logit_l, logit_u, _, _ = ibp.bound_forward_pass(param_l, param_u, batch_l, batch_u)
+    *_, logit_n = nominal_pass.nominal_forward_pass(batch_n, param_n)
+    (*_, logit_l), (*_, logit_u) = ibp.bound_forward_pass(param_l, param_u, batch_l, batch_u)
     logit_l, logit_n, logit_u = logit_l.squeeze(), logit_n.squeeze(), logit_u.squeeze()
 
     if logit_l.dim() == 1:  # binary classification

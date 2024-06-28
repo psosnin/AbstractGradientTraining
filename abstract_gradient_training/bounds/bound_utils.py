@@ -43,8 +43,8 @@ def validate_backward_bound_input(
     dL_max: torch.Tensor,
     param_l: list[torch.Tensor],
     param_u: list[torch.Tensor],
-    inter_l: list[torch.Tensor],
-    inter_u: list[torch.Tensor],
+    activations_l: list[torch.Tensor],
+    activations_u: list[torch.Tensor],
 ) -> tuple[torch.Tensor, torch.Tensor, list[torch.Tensor], list[torch.Tensor]]:
     """
     Validate and reshape input arguments to forward bounding functions.
@@ -52,15 +52,17 @@ def validate_backward_bound_input(
         Wi: [n x m] tensor
         bi: [n x 1] tensor
         dL: [batchsize x output_dim x 1] tensor
-        inter[i]: [batchsize x hidden_dim x 1] tensors
+        activations[i]: [batchsize x hidden_dim x 1] tensors
 
     Args:
         dL_min (torch.Tensor): [batchsize x output_dim x 1] lower bound on the loss gradient with respect to the logits
         dL_max (torch.Tensor): [batchsize x output_dim x 1] upper bound on the loss gradient with respect to the logits
         param_l (list[torch.Tensor]): lower bounds on the weights and biases given as a list [W1, b1, ..., Wm, bm]
         param_u (list[torch.Tensor]): upper bounds on the weights and biases given as a list [W1, b1, ..., Wm, bm]
-        inter_l (list[torch.Tensor]): lower bounds on the intermediate activations given as a list [x0, ..., xL]
-        inter_u (list[torch.Tensor]): upper bounds on the intermediate activations given as a list [x0, ..., xL]
+        activations_l (list[torch.Tensor]): list of lower bounds on all (pre-relu) activations [x0, ..., xL], including
+                                            the input and the logits. Each tensor xi has shape [batchsize x dim x 1].
+        activations_u (list[torch.Tensor]): list of upper bounds on all (pre-relu) activations [x0, ..., xL], including
+                                            the input and the logits. Each tensor has shape [batchsize x dim x 1].
     """
     # check the shapes of the parameters and perform the necessary reshaping
     assert all(p.dim() == 2 for p in param_l[::2]), "Weights must be 2D tensors"
@@ -74,7 +76,7 @@ def validate_backward_bound_input(
     assert dL_max.dim() == 3, "First gradient of the loss must have shape [batchsize x output_dim x 1]"
 
     # check the shapes of the intermediate bounds
-    assert all(x_l.dim() == 3 for x_l in inter_l), "Intermediate bounds must have shape [batchsize x hidden_dim x 1]"
-    assert all(x_u.dim() == 3 for x_u in inter_u), "Intermediate bounds must have shape [batchsize x hidden_dim x 1]"
+    assert all(x_l.dim() == 3 for x_l in activations_l), "Activation bounds must have shape [batchsize x dim x 1]"
+    assert all(x_u.dim() == 3 for x_u in activations_u), "Activation bounds must have shape [batchsize x dim x 1]"
 
-    return dL_min, dL_max, param_l, param_u, inter_l, inter_u
+    return dL_min, dL_max, param_l, param_u, activations_l, activations_u

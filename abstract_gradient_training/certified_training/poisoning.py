@@ -100,9 +100,9 @@ def poison_certified_training(
             batch_frag, label_frag = batch_frag.to(device), label_frag.to(device)
             batch_frag = transform(batch_frag, model, 0)[0] if transform else batch_frag
             # nominal pass
-            logit_n, inter_n = nominal_pass.nominal_forward_pass(batch_frag, param_n)
+            activations_n = nominal_pass.nominal_forward_pass(batch_frag, param_n)
             _, _, dL_n = loss_bound_fn(logit_n, logit_n, logit_n, label_frag)
-            frag_grads_n = nominal_pass.nominal_backward_pass(dL_n, param_n, inter_n)
+            frag_grads_n = nominal_pass.nominal_backward_pass(dL_n, param_n, activations_n)
             # weight perturbed bounds
             grads_weight_perturb_l, grads_weight_perturb_u = ct_utils.grads_helper(
                 batch_frag, batch_frag, label_frag, param_l, param_u, config, False
@@ -118,9 +118,10 @@ def poison_certified_training(
             batch_frag, label_frag = batch_frag.to(device), label_frag.to(device)
             # nominal pass
             batch_frag_n = transform(batch_frag, model, 0)[0] if transform else batch_frag
-            logit_n, inter_n = nominal_pass.nominal_forward_pass(batch_frag_n, param_n)
+            activations_n = nominal_pass.nominal_forward_pass(batch_frag_n, param_n)
+            logit_n = activations_n[-1]
             _, _, dL_n = loss_bound_fn(logit_n, logit_n, logit_n, label_frag)
-            frag_grads_n = nominal_pass.nominal_backward_pass(dL_n, param_n, inter_n)
+            frag_grads_n = nominal_pass.nominal_backward_pass(dL_n, param_n, activations_n)
             # weight perturbed bounds
             grads_weight_perturb_l, grads_weight_perturb_u = ct_utils.grads_helper(
                 batch_frag_n, batch_frag_n, label_frag, param_l, param_u, config, False

@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Optional
 
 import torch
+import torch.nn.functional as F
 from abstract_gradient_training.interval_tensor import IntervalTensor
 from abstract_gradient_training.bounds import bound_utils
 
@@ -16,7 +17,7 @@ def bound_forward_pass(
     x0_u: torch.Tensor,
     relu_lb: str = "zero",
     **kwargs,
-) -> tuple[torch.Tensor, torch.Tensor, list[torch.Tensor], list[torch.Tensor]]:
+) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
     """
     Given bounds on the parameters of the neural network and an interval over the input, compute bounds on the logits
     and intermediate activations of the network using the double-interval crown algorithm
@@ -29,10 +30,10 @@ def bound_forward_pass(
         relu_lb (str): lower bound to use for the ReLU activation (one of "zero", "one", "parallel")
 
     Returns:
-        logit_l (torch.Tensor): lower bounds on the logits
-        logit_u (torch.Tensor): upper bounds on the logits
-        inter_l (list[torch.Tensor]): list of lower bounds on the (post-relu) intermediate activations [x0, ..., xL-1]
-        inter_u (list[torch.Tensor]): list of upper bounds on the (post-relu) intermediate activations [x0, ..., xL-1]
+        activations_l (list[torch.Tensor]): list of lower bounds on the (pre-relu) activations [x0, ..., xL], including
+                                            the input and the logits. Each tensor xi has shape [batchsize x n_i x 1].
+        activations_u (list[torch.Tensor]): list of upper bounds on the (pre-relu) activations [x0, ..., xL], including
+                                            the input and the logits. Each tensor xi has shape [batchsize x n_i x 1].
     """
 
     # validate the input
@@ -51,15 +52,13 @@ def bound_forward_pass(
     for Wk, bk in zip(W, b):
         xhat = AffineNode(x, Wk, bk)
         x = ReLUNode(xhat, relu_lb=relu_lb)
-        bounds.append(xhat.concretize().relu())
+        bounds.append(xhat.concretize())
 
     # format results to match the other implementations
-    bounds.pop()  # remove the last bound as it shouldn't have a relu and instead is returned as logit_l, logit_u
-    inter_l = [b.lb for b in bounds]  # get lower and upper bounds in lists
-    inter_u = [b.ub for b in bounds]
-    logit_l, logit_u = xhat.concretize().tuple
+    activations_l = [b.lb for b in bounds]
+    activations_u = [b.ub for b in bounds]
 
-    return logit_l, logit_u, inter_l, inter_u
+    return activations_l, activations_u
 
 
 def bound_backward_pass(
@@ -67,8 +66,8 @@ def bound_backward_pass(
     dL_max: torch.Tensor,
     param_l: list[torch.Tensor],
     param_u: list[torch.Tensor],
-    inter_l: list[torch.Tensor],
-    inter_u: list[torch.Tensor],
+    activations_l: list[torch.Tensor],
+    activations_u: list[torch.Tensor],
     **kwargs,
 ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
     """
@@ -81,21 +80,27 @@ def bound_backward_pass(
         dL_max (torch.Tensor): upper bound on the gradient of the loss with respect to the logits
         param_l (list[torch.Tensor]): list of lower bounds on the parameters [W1, b1, ..., Wm, bm]
         param_u (list[torch.Tensor]): list of upper bounds on the parameters [W1, b1, ..., Wm, bm]
-        inter_l (list[torch.Tensor]): list of lower bounds on the (post-relu) intermediate activations [x0, ..., xL-1]
-        inter_u (list[torch.Tensor]): list of upper bounds on the (post-relu) intermediate activations [x0, ..., xL-1]
+        activations_l (list[torch.Tensor]): list of lower bounds on the (pre-relu) activations [x0, ..., xL], including
+                                            the input and the logits. Each tensor xi has shape [batchsize x n_i x 1].
+        activations_u (list[torch.Tensor]): list of upper bounds on the (pre-relu) activations [x0, ..., xL], including
+                                            the input and the logits. Each tensor xi has shape [batchsize x n_i x 1].
 
     Returns:
         grads_l (list[torch.Tensor]): list of lower bounds on the gradients given as a list [dW1, db1, ..., dWm, dbm]
         grads_u (list[torch.Tensor]): list of upper bounds on the gradients given as a list [dW1, db1, ..., dWm, dbm]
     """
     # validate the input
-    dL_min, dL_max, param_l, param_u, inter_l, inter_u = bound_utils.validate_backward_bound_input(
-        dL_min, dL_max, param_l, param_u, inter_l, inter_u
+    dL_min, dL_max, param_l, param_u, activations_l, activations_u = bound_utils.validate_backward_bound_input(
+        dL_min, dL_max, param_l, param_u, activations_l, activations_u
     )
+
+    # convert pre-relu activations to post-relu activations
+    activations_l = [activations_l[0]] + [F.relu(x) for x in activations_l[1:-1]] + [activations_l[-1]]
+    activations_u = [activations_u[0]] + [F.relu(x) for x in activations_u[1:-1]] + [activations_u[-1]]
 
     # form IntervalTensors of the parameters and intermediate bounds
     W = [IntervalTensor(W_l, W_u) for W_l, W_u in zip(param_l[::2], param_u[::2])]
-    inter = [IntervalTensor(l, u) for l, u in zip(inter_l, inter_u)]
+    activations = [IntervalTensor(l, u) for l, u in zip(activations_l, activations_u)]
 
     # define the first node in the crown computation graph
     dL_dxhat = CrownNode(None, None, None, None, None, IntervalTensor(dL_min, dL_max))
@@ -103,13 +108,13 @@ def bound_backward_pass(
 
     # compute all partials wrt the hidden layers
     for i in range(len(W) - 1, -1, -1):
-        dL_dW = dL_dxhat.concretize() * inter[i].T()
+        dL_dW = dL_dxhat.concretize() * activations[i].T()
         grads_l.extend([dL_dxhat.concretize().lb, dL_dW.lb])
         grads_u.extend([dL_dxhat.concretize().ub, dL_dW.ub])
         if i == 0:
             break
         dL_dx = AffineNode(dL_dxhat, W[i].T())
-        dL_dxhat = MulNode(dL_dx, inter[i].heaviside())
+        dL_dxhat = MulNode(dL_dx, activations[i].heaviside())
 
     grads_l.reverse()
     grads_u.reverse()
