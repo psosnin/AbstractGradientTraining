@@ -25,7 +25,13 @@ model = torch.nn.Sequential(
     torch.nn.Linear(128, 10)
 )
 # set up configuration object
-config = agt.AGTConfig(n_epochs=10, learning_rate=0.1, k_poison=10, epsilon=0.01, loss="cross_entropy")
+config = agt.AGTConfig(
+    n_epochs=10,
+    learning_rate=0.1,
+    k_poison=10,
+    epsilon=0.01,
+    loss="cross_entropy"
+)
 # run certified training
 param_l, param_n, param_u = agt.poison_certified_training(model, config, dl_train, dl_test)
 ```
