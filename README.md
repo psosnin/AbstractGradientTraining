@@ -71,4 +71,4 @@ This package uses a configuration object AGTConfig to pass hyperparameters into 
 ## References
 
 - [Certified Robustness to Data Poisoning in Gradient-Based Training](https://arxiv.org/pdf/2406.05670v1)
-- [Certificates of Differential Privacy and Unlearning for Gradient-Based Training]()
+- [Certificates of Differential Privacy and Unlearning for Gradient-Based Training](https://arxiv.org/abs/2406.13433)
