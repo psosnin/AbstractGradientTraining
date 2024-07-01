@@ -71,10 +71,8 @@ def unlearning_certified_training(
     for batch, labels in training_iterator:
         # evaluate the network and log the results to tqdm
         network_eval = test_loss_fn(param_n, param_l, param_u, dl_test, model, transform)
-        training_iterator.set_postfix_str(
-            f"Network eval: Worst={network_eval[0]:.2g}, Nominal={network_eval[1]:.2g}, Best={network_eval[2]:.2g}"
-        )
-        # get if we should terminate training early
+        training_iterator.set_postfix_str(ct_utils.get_progress_message(network_eval, param_l, param_u))
+        # decide whether to terminate training early
         if ct_utils.break_condition(network_eval):
             return param_l, param_n, param_u
         # we want the shape to be [batchsize x input_dim x 1]

@@ -84,6 +84,28 @@ def break_condition(evaluation: tuple[float, float, float]) -> bool:
     return False
 
 
+def get_progress_message(
+    network_eval: tuple[float, float, float], param_l: list[torch.Tensor], param_u: list[torch.Tensor]
+) -> str:
+    """
+    Generate a progress message for the certified training loop.
+
+    Args:
+        network_eval (tuple[float, float, float]): (worst case, nominal case, best case) evaluation of the test metric.
+        param_l (list[torch.Tensor]): List of the lower bound parameters of the network [W1, b1, ..., Wn, bn].
+        param_u (list[torch.Tensor]): List of the upper bound parameters of the network [W1, b1, ..., Wn, bn].
+
+    Returns:
+        str: Progress message for the certified training loop.
+    """
+    msg = (
+        f"Bound: {(param_l[0] - param_u[0]).norm():.3} "
+        f"Network eval: Worst={network_eval[0]:.2g}, Nominal={network_eval[1]:.2g}, Best={network_eval[2]:.2g}"
+    )
+
+    return msg
+
+
 def get_parameters(model: torch.nn.Sequential) -> tuple[list[torch.Tensor], list[torch.Tensor], list[torch.Tensor]]:
     """
     Get the parameters of only the dense layers of the pytorch model. This function assumes that all dense layers

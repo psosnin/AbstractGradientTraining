@@ -70,9 +70,7 @@ def poison_certified_training(
     for batch, labels, batch_clean, labels_clean in training_iterator:
         # evaluate the network and log the results to tqdm
         network_eval = test_loss_fn(param_n, param_l, param_u, dl_test, model, transform)
-        training_iterator.set_postfix_str(
-            f"Network eval: Worst={network_eval[0]:.2g}, Nominal={network_eval[1]:.2g}, Best={network_eval[2]:.2g}"
-        )
+        training_iterator.set_postfix_str(ct_utils.get_progress_message(network_eval, param_l, param_u))
         # possibly terminate early
         if ct_utils.break_condition(network_eval):
             return param_l, param_n, param_u
@@ -101,7 +99,7 @@ def poison_certified_training(
             batch_frag = transform(batch_frag, model, 0)[0] if transform else batch_frag
             # nominal pass
             activations_n = nominal_pass.nominal_forward_pass(batch_frag, param_n)
-            _, _, dL_n = loss_bound_fn(logit_n, logit_n, logit_n, label_frag)
+            _, _, dL_n = loss_bound_fn(activations_n[-1], activations_n[-1], activations_n[-1], label_frag)
             frag_grads_n = nominal_pass.nominal_backward_pass(dL_n, param_n, activations_n)
             # weight perturbed bounds
             grads_weight_perturb_l, grads_weight_perturb_u = ct_utils.grads_helper(
@@ -119,8 +117,7 @@ def poison_certified_training(
             # nominal pass
             batch_frag_n = transform(batch_frag, model, 0)[0] if transform else batch_frag
             activations_n = nominal_pass.nominal_forward_pass(batch_frag_n, param_n)
-            logit_n = activations_n[-1]
-            _, _, dL_n = loss_bound_fn(logit_n, logit_n, logit_n, label_frag)
+            _, _, dL_n = loss_bound_fn(activations_n[-1], activations_n[-1], activations_n[-1], label_frag)
             frag_grads_n = nominal_pass.nominal_backward_pass(dL_n, param_n, activations_n)
             # weight perturbed bounds
             grads_weight_perturb_l, grads_weight_perturb_u = ct_utils.grads_helper(
