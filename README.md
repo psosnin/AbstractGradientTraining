@@ -49,8 +49,8 @@ This package uses a configuration object AGTConfig to pass hyperparameters into 
 | `learning_rate`   | float  | > 0                                       | N/A           | Learning rate for the optimizer.                                             |
 | `l1_reg`          | float  | >= 0                                      | 0.0           | L1 regularization parameter.                                                 |
 | `l2_reg`          | float  | >= 0                                      | 0.0           | L2 regularization parameter.                                                 |
-| `optimizer`       | str    | "sgd", "adam"           | "sgd"         | Optimizer type. Optimizer "adam" not recommended.                                                       |
-| `optimizer_kwargs`| dict   | Any                                       | {}            | Additional keyword arguments for the optimizer, e.g. learning rate decay.                              |
+| `lr_decay`          | float  | >= 0                                      | 0.0           | Learning rate decay factor. lr ~ (1 / (1 + decay_rate * epoch))                                                 |
+| `lr_min`          | float  | >= 0                                      | 0.0           | Minimum learning rate for decay scheduler.                                                 |
 | `loss`            | str    | "cross_entropy", "binary_cross_entropy", "max_margin", "mse", "hinge" | N/A           | Loss function.                                                               |
 | `device`          | str    | Any                                       | "cpu"         | Device for training (e.g., "cpu" or "cuda").                                 |
 | `log_level`       | str    | "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL" | "INFO"       | Logging level.                                                               |

@@ -4,18 +4,12 @@ pydantic is a data validation library that uses Python type annotations to valid
 """
 
 import logging
-from typing import Dict, Callable, Type, Any
+from typing import Dict, Callable
 import pydantic
 
-from abstract_gradient_training import optimizers
 from abstract_gradient_training import bounds
 from abstract_gradient_training import loss_gradient_bounds
 from abstract_gradient_training import test_metrics
-
-OPTIMIZERS = {
-    "sgd": optimizers.SGD,
-    "adam": optimizers.ADAM,
-}
 
 FORWARD_BOUNDS = {
     "interval": bounds.interval_bound_propagation.bound_forward_pass,
@@ -44,10 +38,10 @@ class AGTConfig:
     # optimizer parameters
     n_epochs: int = pydantic.Field(..., gt=0)
     learning_rate: float = pydantic.Field(..., gt=0)
-    l1_reg: float = pydantic.Field(0.0, ge=0)
-    l2_reg: float = pydantic.Field(0.0, ge=0)
-    optimizer: str = pydantic.Field("sgd", json_schema_extra={"in_": OPTIMIZERS.keys()})
-    optimizer_kwargs: Dict = pydantic.Field(default_factory=dict)
+    l1_reg: float = pydantic.Field(0.0, ge=0, description="L1 regularization factor")
+    l2_reg: float = pydantic.Field(0.0, ge=0, description="L2 regularization factor")
+    lr_decay: float = pydantic.Field(0.0, ge=0, description="Learning rate decay factor")
+    lr_min: float = pydantic.Field(0.0, ge=0, description="Minimum learning rate for learning rate scheduler")
     loss: str = pydantic.Field(..., json_schema_extra={"in_": LOSS_BOUNDS.keys()})
     device: str = "cpu"
     log_level: str = pydantic.Field(
@@ -77,11 +71,6 @@ class AGTConfig:
             logging.warning("k=0 suffers from numerical instability, consider using dtype double or setting k > 0.")
         if self.fragsize <= k:
             raise ValueError(f"fragsize must be greater than k but got fragsize={self.fragsize} and k={k}")
-
-    @pydantic.computed_field
-    def optimizer_class(self) -> Type[Any]:
-        """Return the optimizer class based on the optimizer name."""
-        return OPTIMIZERS[self.optimizer]
 
     @pydantic.computed_field
     def forward_bound_fn(self) -> Callable:

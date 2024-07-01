@@ -12,6 +12,7 @@ from abstract_gradient_training import nominal_pass
 from abstract_gradient_training.certified_training import utils as ct_utils
 from abstract_gradient_training import interval_arithmetic
 from abstract_gradient_training.certified_training.configuration import AGTConfig
+from abstract_gradient_training import optimizers
 
 
 @torch.no_grad()
@@ -54,7 +55,7 @@ def privacy_certified_training(
     param_n, param_l, param_u = ct_utils.get_parameters(model)
     n_epochs = config.n_epochs
     fragsize = config.fragsize
-    optimizer = config.optimizer_class(param_n, config)
+    optimizer = optimizers.SGD(config)
     loss_bound_fn = config.loss_bound_fn
     test_loss_fn = config.test_loss_fn
     logging.getLogger().setLevel(config.log_level)
