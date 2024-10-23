@@ -14,3 +14,11 @@ lightning_logs
 build
 *.egg-info
 *.ckpt
+notebooks
+*.log
+examples/datasets/MNIST/*
+.tmp
+.results
+.models
+.data
+.datasets

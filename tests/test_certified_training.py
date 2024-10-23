@@ -1,11 +1,7 @@
-import sys
-import os
 from itertools import product
 from parameterized import parameterized
 from copy import deepcopy
 import torch
-
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))  # noqa
 
 from tests import utils
 from abstract_gradient_training import poison_certified_training

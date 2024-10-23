@@ -1,11 +1,10 @@
 """Linear bound propagation (CROWN)."""
 
 from __future__ import annotations
-from typing import Optional
 
 import torch
 import torch.nn.functional as F
-from abstract_gradient_training.interval_tensor import IntervalTensor
+from abstract_gradient_training.bounds.interval_tensor import IntervalTensor
 from abstract_gradient_training.bounds import bound_utils
 
 
@@ -143,28 +142,30 @@ class CrownNode:
 
     def __init__(
         self,
-        in_var: Optional[CrownNode],
-        Lambda: Optional[IntervalTensor],
-        delta: Optional[IntervalTensor],
-        Omega: Optional[IntervalTensor],
-        theta: Optional[IntervalTensor],
-        conc: Optional[IntervalTensor] = None,
+        in_var: CrownNode | None,
+        Lambda: IntervalTensor | None,
+        delta: torch.Tensor | None,
+        Omega: IntervalTensor | None,
+        theta: torch.Tensor | None,
+        conc: IntervalTensor | None = None,
     ):
         """
         Initialise the CrownNode with the given linear bounds relating the output to input of the node.
         Args:
-            in_var (Optional[CrownNode]): CrownNode representing the input node
-            Lambda (Optional[IntervalTensor]): Bounds on the coefficient matrix Lambda
-            delta (Optional[IntervalTensor]): Bounds on the bias delta
-            Omega (Optional[IntervalTensor]): Bounds on the coefficient matrix Omega
-            theta (Optional[IntervalTensor]): Bounds on the bias theta
-            conc (Optional[IntervalTensor]): Bounds on the concretization of this node
+            in_var (CrownNode | None): CrownNode representing the input node
+            Lambda (IntervalTensor | None): Bounds on the coefficient matrix Lambda
+            delta (IntervalTensor | None): Bounds on the bias delta
+            Omega (IntervalTensor | None): Bounds on the coefficient matrix Omega
+            theta (IntervalTensor | None): Bounds on the bias theta
+            conc (IntervalTensor | None): Bounds on the concretization of this node
         """
-        assert isinstance(Lambda, Optional[IntervalTensor])
-        assert isinstance(Omega, Optional[IntervalTensor])
-        assert isinstance(delta, Optional[torch.Tensor])
-        assert isinstance(theta, Optional[torch.Tensor])
-        assert isinstance(conc, Optional[IntervalTensor])
+        # TODO: change the 'input' node to simply be an IntervalTensor assigned to in_var, so we don't need to have
+        # all these IntervalTensor | None types
+        assert isinstance(Lambda, IntervalTensor | None)
+        assert isinstance(Omega, IntervalTensor | None)
+        assert isinstance(delta, torch.Tensor | None)
+        assert isinstance(theta, torch.Tensor | None)
+        assert isinstance(conc, IntervalTensor | None)
 
         self.in_var = in_var
         self.Lambda = Lambda
@@ -175,10 +176,10 @@ class CrownNode:
 
         # check that we include the batch dimension
         if in_var is not None:
-            assert len(self.Lambda.shape) == 3
-            assert len(self.Omega.shape) == 3
-            assert len(self.delta.shape) == 3
-            assert len(self.theta.shape) == 3
+            assert self.Lambda is not None and len(self.Lambda.shape) == 3
+            assert self.Omega is not None and len(self.Omega.shape) == 3
+            assert self.delta is not None and len(self.delta.shape) == 3
+            assert self.theta is not None and len(self.theta.shape) == 3
 
     @torch.no_grad()
     def backpropagate(self) -> None:
@@ -191,6 +192,9 @@ class CrownNode:
         Omega0, theta0 = self.Omega, self.theta
 
         cur = self.in_var
+        if cur is None:
+            return  # we are already at the input node
+
         # backpropagate the bounds from the current node to its input node, until we reach a node without an input
         while cur.in_var is not None:
             theta0 = cur.backprop_Theta(Omega0, theta0)
@@ -278,12 +282,12 @@ class AffineNode(CrownNode):
             out_var >= Omega @ in_var + theta = W @ in_var + b >= lower
     """
 
-    def __init__(self, in_var: CrownNode, W: IntervalTensor, b: Optional[IntervalTensor] = None):
+    def __init__(self, in_var: CrownNode, W: IntervalTensor, b: IntervalTensor | None = None):
         """
         Args:
             in_var (CrownNode): CrownNode representing the input node
             W (IntervalTensor): Bounds on the weight matrix
-            b (Optional[IntervalTensor]): Bounds on the bias
+            b (IntervalTensor | None): Bounds on the bias
         """
         device = W[0].get_device()
         device = torch.device(device) if device != -1 else torch.device("cpu")

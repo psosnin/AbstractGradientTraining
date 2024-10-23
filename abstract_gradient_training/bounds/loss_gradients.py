@@ -8,6 +8,42 @@ import torch.nn.functional as F
 from abstract_gradient_training import interval_arithmetic
 
 
+def bound_loss_function_derivative(
+    loss: str,
+    logit_l: torch.Tensor,
+    logit_u: torch.Tensor,
+    logit_n: torch.Tensor,
+    labels: torch.Tensor,
+    **kwargs,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Compute an interval bound for the partial derivative of the loss function with respect to the logits.
+
+    Args:
+        loss (str): Loss function name.
+        logit_l (torch.Tensor): [batchsize x output_dim x 1] Lower bound on the output logits of the network.
+        logit_u (torch.Tensor): [batchsize x output_dim x 1] Upper bound on the output logits of the network.
+        logit_n (torch.Tensor): [batchsize x output_dim x 1] Nominal output logits of the network.
+        labels (torch.Tensor): [batchsize] Tensor of labels for the batch.
+
+    Returns:
+        dl_l (torch.Tensor): lower bound on the partial derivative of the loss with respect to the logits.
+        dl_u (torch.Tensor): upper bound on the partial derivative of the loss with respect to the logits.
+        dl_n (torch.Tensor): nominal value of the partial derivative of the loss with respect to the logits.
+    """
+    if loss == "cross_entropy":
+        return bound_cross_entropy_derivative(logit_l, logit_u, logit_n, labels, **kwargs)
+    if loss == "binary_cross_entropy":
+        return bound_bce_derivative(logit_l, logit_u, logit_n, labels, **kwargs)
+    if loss == "max_margin":
+        return bound_max_margin_derivative(logit_l, logit_u, logit_n, labels, **kwargs)
+    if loss == "mse":
+        return bound_mse_derivative(logit_l, logit_u, logit_n, labels, **kwargs)
+    if loss == "hinge":
+        return bound_hinge_derivative(logit_l, logit_u, logit_n, labels, **kwargs)
+    raise ValueError(f"Loss function {loss} not supported.")
+
+
 def bound_cross_entropy_derivative(
     logit_l: torch.Tensor,
     logit_u: torch.Tensor,
@@ -39,6 +75,7 @@ def bound_cross_entropy_derivative(
     assert logit_l.dim() == 3, "Logits must be of shape (batch_size, nclasses, 1) for binary cross-entropy loss."
     assert logit_l.shape[-1] == 1
     assert logit_l.shape[-2] > 1, "Cross-entropy loss does not support binary classification, use BCE instead."
+    assert labels.max() <= logit_l.shape[-2], "Label out of range of logit dimension."
     labels = labels.flatten(start_dim=0)  # to allow for labels to be of shape (batch_size,) or (batch_size, 1)
     assert labels.dim() == 1, f"Labels must be of shape (batch_size,) not {labels.shape}"
     # calculate post-softmax output with and without bounds
@@ -60,8 +97,7 @@ def bound_cross_entropy_derivative(
         dl_l = y_l - y_t_u
         dl_n = y_n - y_t
         dl_u = y_u - 0.0
-    interval_arithmetic.validate_interval(dl_l, dl_n)
-    interval_arithmetic.validate_interval(dl_n, dl_u)
+    interval_arithmetic.validate_interval(dl_l, dl_u, dl_n)
     return dl_l, dl_u, dl_n
 
 
@@ -90,6 +126,7 @@ def bound_bce_derivative(
         dl_n (torch.Tensor): nominal value of the partial derivative of the loss with respect to the logits.
     """
 
+    assert ((labels == 0) + (labels == 1)).all(), "Labels must be binary for binary cross-entropy loss."
     assert logit_l.dim() == 3, "Logits must be of shape (batch_size, 1, 1) for binary cross-entropy loss."
     assert logit_l.shape[-1] == 1
     assert logit_l.shape[-2] == 1, "Binary cross-entropy loss must have logit size (batch_size, 1, 1)."
@@ -103,8 +140,7 @@ def bound_bce_derivative(
         dl_l = torch.sigmoid(logit_l) - 1
         dl_n = torch.sigmoid(logit_n) - labels
         dl_u = torch.sigmoid(logit_u) - 0
-    interval_arithmetic.validate_interval(dl_l, dl_n)
-    interval_arithmetic.validate_interval(dl_n, dl_u)
+    interval_arithmetic.validate_interval(dl_l, dl_u, dl_n)
     return dl_l, dl_u, dl_n
 
 
@@ -136,6 +172,7 @@ def bound_max_margin_derivative(
     labels = labels.flatten(start_dim=0)
     assert len(logit_l.shape) == 3, "Logits must be of shape (batch_size, 1, 1) for binary cross-entropy loss."
     assert logit_l.shape[-2] > 1, "Max-margin loss does not support binary classification, use BCE instead."
+    assert labels.max() <= logit_l.shape[-2], "Label out of range of logit dimension."
     assert labels.dim() == 1, "Labels must be of shape (batch_size,)."
     assert k_label_poison == 0, "Poisoning is not supported for max-margin loss."
     assert kwargs.get("poison_target", -1) == -1, "Specifying a poison target is not supported for this loss."
@@ -153,8 +190,7 @@ def bound_max_margin_derivative(
     dl_l[idx, labels] = -dl_u.sum(dim=-2)
     dl_u[idx, labels] = tmp
     dl_n[idx, labels] = -dl_n.sum(dim=-2)
-    interval_arithmetic.validate_interval(dl_l, dl_n)
-    interval_arithmetic.validate_interval(dl_n, dl_u)
+    interval_arithmetic.validate_interval(dl_l, dl_u, dl_n)
     return dl_l, dl_u, dl_n
 
 
@@ -185,6 +221,7 @@ def bound_hinge_derivative(
         dl_n (torch.Tensor): nominal value of the partial derivative of the loss with respect to the logits.
     """
 
+    assert ((labels == 0) + (labels == 1)).all(), "Labels must be binary for binary cross-entropy loss."
     assert logit_l.dim() == 3, "Logits must be of shape (batch_size, 1, 1) for binary loss."
     assert logit_l.shape[-1] == 1
     assert logit_l.shape[-2] == 1, "Hinge loss must have logit size (batch_size, 1, 1)."
@@ -196,8 +233,7 @@ def bound_hinge_derivative(
     dl_l = 1.0 * (labels == 1) - 1.0 * (labels == 0) * (logit_l < 1)
     dl_n = 1.0 * (labels == 1) - 1.0 * (labels == 0) * (logit_n < 1)
     dl_u = 1.0 * (labels == 1) - 1.0 * (labels == 0) * (logit_u < 1)
-    interval_arithmetic.validate_interval(dl_l, dl_n)
-    interval_arithmetic.validate_interval(dl_n, dl_u)
+    interval_arithmetic.validate_interval(dl_l, dl_u, dl_n)
     return dl_l.type(logit_l.dtype), dl_u.type(logit_l.dtype), dl_n.type(logit_l.dtype)
 
 
@@ -236,6 +272,5 @@ def bound_mse_derivative(
     dl_l = 2 * (logit_l - target - label_epsilon)
     dl_n = 2 * (logit_n - target)
     dl_u = 2 * (logit_u - target + label_epsilon)
-    interval_arithmetic.validate_interval(dl_l, dl_n)
-    interval_arithmetic.validate_interval(dl_n, dl_u)
+    interval_arithmetic.validate_interval(dl_l, dl_u, dl_n)
     return dl_l, dl_u, dl_n

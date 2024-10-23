@@ -1,7 +1,6 @@
 """A class representing an interval over a pytorch tensor."""
 
 from __future__ import annotations
-from typing import Optional, Union
 
 import torch
 import torch.nn.functional as F
@@ -15,10 +14,10 @@ class IntervalTensor:
     support interval arithmetic.
     """
 
-    def __init__(self, lb: torch.Tensor, ub: Optional[torch.Tensor] = None):
+    def __init__(self, lb: torch.Tensor, ub: torch.Tensor | None = None):
         """If ub is None, then the interval is constant and we set self.lb = self.ub = lb."""
         assert isinstance(lb, torch.Tensor)
-        assert isinstance(ub, Optional[torch.Tensor])
+        assert isinstance(ub, torch.Tensor | None)
         if ub is not None:
             assert lb.shape == ub.shape
             interval_arithmetic.validate_interval(lb, ub)
@@ -34,7 +33,7 @@ class IntervalTensor:
     def __str__(self):
         return f"IntervalTensor(\n{self.lb},\n{self.ub}\n)"
 
-    def __add__(self, other: Union[IntervalTensor, torch.Tensor]) -> IntervalTensor:
+    def __add__(self, other: IntervalTensor | torch.Tensor) -> IntervalTensor:
         """Add two intervals or an interval plus a constant using A + B."""
         if isinstance(other, IntervalTensor):
             return IntervalTensor(self.lb + other.lb, self.ub + other.ub)
@@ -52,27 +51,26 @@ class IntervalTensor:
         assert isinstance(other, IntervalTensor)
         return IntervalTensor(*interval_arithmetic.propagate_matmul(self.lb, self.ub, other.lb, other.ub))
 
-    def __mul__(self, other: Union[IntervalTensor, torch.Tensor]) -> IntervalTensor:
+    def __mul__(self, other: IntervalTensor | torch.Tensor) -> IntervalTensor:
         """Elementwise product of two intervals A * B."""
         if isinstance(other, tuple):
             other = IntervalTensor(*other)
         if not isinstance(other, IntervalTensor):
             if (other >= 0).all():
                 return IntervalTensor(self.lb * other, self.ub * other)
-            else:
-                cases = torch.stack([self.lb * other, self.ub * other])
+            cases = torch.stack([self.lb * other, self.ub * other])
         else:
             cases = torch.stack([self.lb * other.lb, self.ub * other.lb, self.lb * other.ub, self.ub * other.ub])
         lb = torch.min(cases, dim=0)[0]
         ub = torch.max(cases, dim=0)[0]
         return IntervalTensor(lb, ub)
 
-    def __getitem__(self, key: Union[int, slice, torch.Tensor]) -> IntervalTensor:
+    def __getitem__(self, key: int | slice | torch.Tensor) -> IntervalTensor:
         return IntervalTensor(self.lb[key], self.ub[key])
 
     def isin(self, x: torch.Tensor) -> bool:
         """Check if x is in the interval."""
-        return (self.lb <= x).all() and (x <= self.ub).all()
+        return bool((self.lb <= x).all() and (x <= self.ub).all())
 
     def heaviside(self) -> IntervalTensor:
         """Return the heaviside function applied to the interval."""
@@ -107,7 +105,7 @@ class IntervalTensor:
         return IntervalTensor(self.lb.transpose(dim1, dim2), self.ub.transpose(dim1, dim2))
 
     @staticmethod
-    def zeros_like(A: Union[IntervalTensor, torch.Tensor]) -> IntervalTensor:
+    def zeros_like(A: IntervalTensor | torch.Tensor) -> IntervalTensor:
         """Create a zero interval with the same shape as A."""
         if isinstance(A, IntervalTensor):
             z = torch.zeros_like(A.lb).type(A.dtype)
