@@ -2,6 +2,7 @@
 
 import torch
 
+
 class PilotNet(torch.nn.Sequential):
     def __init__(self):
         super().__init__(

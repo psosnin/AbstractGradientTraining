@@ -1,5 +1,7 @@
 """Interval bound propagation."""
 
+from typing import Literal
+
 import torch
 import torch.nn.functional as F
 
@@ -8,7 +10,12 @@ from abstract_gradient_training.bounds import bound_utils
 
 
 def bound_forward_pass(
-    param_l: list[torch.Tensor], param_u: list[torch.Tensor], x0_l: torch.Tensor, x0_u: torch.Tensor, **kwargs
+    param_l: list[torch.Tensor],
+    param_u: list[torch.Tensor],
+    x0_l: torch.Tensor,
+    x0_u: torch.Tensor,
+    interval_matmul: Literal["rump", "exact", "nguyen"] = "rump",
+    **kwargs,
 ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
     """
     Given bounds on the parameters of the neural network and an interval over the input, compute bounds on the logits
@@ -19,12 +26,13 @@ def bound_forward_pass(
         param_u (list[torch.Tensor]): list of upper bounds on the parameters of the network [W1, b1, ..., Wm, bm]
         x0_l (torch.Tensor): [batchsize x input_dim x 1] Lower bound on the input to the network.
         x0_u (torch.Tensor): [batchsize x input_dim x 1] Upper bound on the input to the network.
+        interval_matmul (str): one of ["rump", "exact", "nguyen"], method to use for interval matrix multiplication.
 
     Returns:
         activations_l (list[torch.Tensor]): list of lower bounds on the (pre-relu) activations [x0, ..., xL], including
-                                            the input and the logits. Each tensor xi has shape [batchsize x n_i x 1].
+            the input and the logits. Each tensor xi has shape [batchsize x n_i x 1].
         activations_u (list[torch.Tensor]): list of upper bounds on the (pre-relu) activations [x0, ..., xL], including
-                                            the input and the logits. Each tensor xi has shape [batchsize x n_i x 1].
+            the input and the logits. Each tensor xi has shape [batchsize x n_i x 1].
     """
 
     # validate the input
@@ -36,10 +44,10 @@ def bound_forward_pass(
     # propagate interval bound through each layer
     for i in range(len(W_l)):
         if i == 0:  # no relu for input layer
-            h_l, h_u = interval_arithmetic.propagate_affine(x0_l, x0_u, W_l[i], W_u[i], b_l[i], b_u[i])
+            h_l, h_u = interval_arithmetic.propagate_affine(x0_l, x0_u, W_l[i], W_u[i], b_l[i], b_u[i], interval_matmul)
         else:
             h_l, h_u = interval_arithmetic.propagate_affine(
-                F.relu(activations_l[-1]), F.relu(activations_u[-1]), W_l[i], W_u[i], b_l[i], b_u[i]
+                F.relu(activations_l[-1]), F.relu(activations_u[-1]), W_l[i], W_u[i], b_l[i], b_u[i], interval_matmul
             )
         activations_l.append(h_l)
         activations_u.append(h_u)
@@ -54,7 +62,8 @@ def bound_backward_pass(
     param_u: list[torch.Tensor],
     activations_l: list[torch.Tensor],
     activations_u: list[torch.Tensor],
-    **kwargs
+    interval_matmul: Literal["rump", "exact", "nguyen"] = "rump",
+    **kwargs,
 ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
     """
     Given bounds on the parameters, intermediate activations and the first partial derivative of the loss, compute
@@ -67,9 +76,10 @@ def bound_backward_pass(
         param_l (list[torch.Tensor]): list of lower bounds on the parameters [W1, b1, ..., Wm, bm]
         param_u (list[torch.Tensor]): list of upper bounds on the parameters [W1, b1, ..., Wm, bm]
         activations_l (list[torch.Tensor]): list of lower bounds on the (pre-relu) activations [x0, ..., xL], including
-                                            the input and the logits. Each tensor xi has shape [batchsize x n_i x 1].
+            the input and the logits. Each tensor xi has shape [batchsize x n_i x 1].
         activations_u (list[torch.Tensor]): list of upper bounds on the (pre-relu) activations [x0, ..., xL], including
-                                            the input and the logits. Each tensor xi has shape [batchsize x n_i x 1].
+            the input and the logits. Each tensor xi has shape [batchsize x n_i x 1].
+        interval_matmul (str): one of ["rump", "exact", "nguyen"], method to use for interval matrix multiplication.
 
     Returns:
         grads_l (list[torch.Tensor]): list of lower bounds on the gradients given as a list [dW1, db1, ..., dWm, dbm]
@@ -89,19 +99,23 @@ def bound_backward_pass(
 
     # compute the gradient of the loss with respect to the weights and biases of the last layer
     dW_min, dW_max = interval_arithmetic.propagate_matmul(
-        dL_min, dL_max, activations_l[-2].transpose(-2, -1), activations_u[-2].transpose(-2, -1)
+        dL_min, dL_max, activations_l[-2].transpose(-2, -1), activations_u[-2].transpose(-2, -1), interval_matmul
     )
 
     grads_l, grads_u = [dL_min, dW_min], [dL_max, dW_max]
 
     # compute gradients for each layer
     for i in range(len(W_l) - 1, 0, -1):
-        dL_dz_min, dL_dz_max = interval_arithmetic.propagate_matmul(W_l[i].T, W_u[i].T, dL_min, dL_max)
+        dL_dz_min, dL_dz_max = interval_arithmetic.propagate_matmul(W_l[i].T, W_u[i].T, dL_min, dL_max, interval_matmul)
         min_act = (activations_l[i] > 0).type(activations_l[i].dtype)
         max_act = (activations_u[i] > 0).type(activations_u[i].dtype)
         dL_min, dL_max = interval_arithmetic.propagate_elementwise(dL_dz_min, dL_dz_max, min_act, max_act)
         dW_min, dW_max = interval_arithmetic.propagate_matmul(
-            dL_min, dL_max, activations_l[i - 1].transpose(-2, -1), activations_u[i - 1].transpose(-2, -1)
+            dL_min,
+            dL_max,
+            activations_l[i - 1].transpose(-2, -1),
+            activations_u[i - 1].transpose(-2, -1),
+            interval_matmul,
         )
         grads_l.append(dL_min)
         grads_l.append(dW_min)

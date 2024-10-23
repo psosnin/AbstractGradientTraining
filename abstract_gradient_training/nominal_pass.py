@@ -14,8 +14,7 @@ def nominal_forward_pass(x0: torch.Tensor, params: list[torch.Tensor]) -> list[t
 
     Returns:
         activations (list[torch.Tensor]): List of tensors [x0, x1, ..., xn] where x0 is the input, xn is the logit and
-                                          x1, ..., xn-1 are the (pre-relu) intermediate activations. Each tensor is of
-                                          shape [batchsize x dim x 1].
+            x1, ..., xn-1 are the (pre-relu) intermediate activations. Each tensor is of shape [batchsize x dim x 1].
     """
 
     assert len(x0.shape) == 3  # this function expects a batched input
@@ -39,11 +38,10 @@ def nominal_backward_pass(
 
     Args:
         dL (torch.Tensor): Tensor of shape [batchsize x output_dim x 1] representing the gradient of the loss with
-                           respect to the logits of the network.
+            respect to the logits of the network.
         params (list[torch.Tensor]): List of the nominal parameters of the network [W1, b1, ..., Wn, bn].
         activations (list[torch.Tensor]): List of tensors [x0, x1, ..., xn] where x0 is the input, xn is the logit and
-                                          x1, ..., xn-1 are the (pre-relu) intermediate activations. Each tensor is of
-                                          shape [batchsize x dim x 1].
+            x1, ..., xn-1 are the (pre-relu) intermediate activations. Each tensor is of shape [batchsize x dim x 1].
     Returns:
         list[torch.Tensor]: List of gradients of the network [dW1, db1, ..., dWm, dbm]
     """

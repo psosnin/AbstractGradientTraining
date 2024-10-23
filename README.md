@@ -38,7 +38,6 @@ param_l, param_n, param_u = agt.poison_certified_training(model, config, dl_trai
 
 Additional usage examples can be found in the `examples` directory.
 
-
 ## Configuration
 
 This package uses a configuration object AGTConfig to pass hyperparameters into the certified training methods. The following table lists the available hyperparameters:
@@ -49,14 +48,14 @@ This package uses a configuration object AGTConfig to pass hyperparameters into 
 | `learning_rate`   | float  | > 0                                       | N/A           | Learning rate for the optimizer.                                             |
 | `l1_reg`          | float  | >= 0                                      | 0.0           | L1 regularization parameter.                                                 |
 | `l2_reg`          | float  | >= 0                                      | 0.0           | L2 regularization parameter.                                                 |
-| `lr_decay`          | float  | >= 0                                      | 0.0           | Learning rate decay factor. lr ~ (1 / (1 + decay_rate * epoch))                                                 |
+| `lr_decay`          | float  | >= 0                                      | 0.0           | Learning rate decay factor. lr ~ (1 / (1 + decay_rate * batch_no))                                                 |
 | `lr_min`          | float  | >= 0                                      | 0.0           | Minimum learning rate for decay scheduler.                                                 |
 | `loss`            | str    | "cross_entropy", "binary_cross_entropy", "max_margin", "mse", "hinge" | N/A           | Loss function.                                                               |
 | `device`          | str    | Any                                       | "cpu"         | Device for training (e.g., "cpu" or "cuda").                                 |
 | `log_level`       | str    | "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL" | "INFO"       | Logging level.                                                               |
-| `forward_bound`   | str    | "interval", "crown", "interval+crown"      | "interval"    | Forward bounding method.                                                     |
-| `backward_bound`  | str    |"interval", "crown" | "interval"    | Backward bounding method.                                                    |
-| `bound_kwargs`    | dict   | Any                                       | {}            | Additional keyword arguments for bounding methods.                           |
+| `forward_bound`   | str    | "interval", "crown", "interval,crown", "miqp", "milp", "qcqp", "lp"      | "interval"    | Forward bounding method.                                                     |
+| `backward_bound`  | str    |"interval", "crown", "miqp", "qcqp" | "interval"    | Backward bounding method.                                                    |
+| `bound_kwargs`    | dict   | Any                                       | {}            | Additional keyword arguments for bounding methods. See individual bounding methods for details.                           |
 | `fragsize`        | int    | > 0                                       | 10000         | Size of fragments to split each batch into to pass into the bounding methods. Larger is faster but requires more memory.                                          |
 | `k_poison`        | int    | >= 0                                      | 0             | **Certified poisoning only** Number of poisoned samples.                                                  |
 | `epsilon`         | float  | >= 0                                      | 0.0           | **Certified poisoning only** Epsilon value for poisoning.                                                 |
@@ -65,8 +64,10 @@ This package uses a configuration object AGTConfig to pass hyperparameters into 
 | `poison_target`   | int    | >= 0                                      | -1            | **Certified poisoning only** Target index for poisoning.                                                  |
 | `k_unlearn`       | int    | >= 0                                      | 0             | **Certified unlearning only** Number of samples to unlearn.                                                |
 | `k_private`       | int    | >= 0                                      | 0             | **Certified privacy only** Number of private samples.                                                   |
-| `clip_gamma`      | float  | > 0                                       | 1e10          | **Certified privacy and unlearning only** Clipping parameter gamma for differential privacy.                           |
-| `dp_sgd_sigma`    | float  | >= 0                                      | 0.0           | **Certified privacy and unlearning only** Standard deviation of Gaussian noise for DP-SGD.                             |
+| `clip_gamma`      | float  | > 0                                       | `inf`         | **Certified privacy and unlearning only** Gradient clipping level.                           |
+| `clip_method`      | str  | "norm", "clamp"                            | "clamp"          | **Certified privacy and unlearning only** Type of gradient clipping to use.                           |
+| `noise_multiplier`    | float  | >= 0                                      | 0.0           | **Certified privacy and unlearning only** DP-SGD noise multiplier. Added noise has scale `clip_gamma * noise_multiplier`.                               |
+| `noise_type`    | str  | "gaussian", "laplace"                                   | "gaussian"           | **Certified privacy and unlearning only** Type of noise to add to gradients.                               |
 
 ## References
 

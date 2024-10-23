@@ -1,6 +1,8 @@
-"""Functions for validating the inputs into the bounding functions."""
+"""Helper functions for bounding functions."""
 
+from collections.abc import Callable
 import torch
+import numpy as np
 
 
 def validate_forward_bound_input(
@@ -45,7 +47,7 @@ def validate_backward_bound_input(
     param_u: list[torch.Tensor],
     activations_l: list[torch.Tensor],
     activations_u: list[torch.Tensor],
-) -> tuple[torch.Tensor, torch.Tensor, list[torch.Tensor], list[torch.Tensor]]:
+) -> tuple[torch.Tensor, torch.Tensor, list[torch.Tensor], list[torch.Tensor], list[torch.Tensor], list[torch.Tensor]]:
     """
     Validate and reshape input arguments to forward bounding functions.
     The bounding functions require the following shapes:
@@ -80,3 +82,37 @@ def validate_backward_bound_input(
     assert all(x_u.dim() == 3 for x_u in activations_u), "Activation bounds must have shape [batchsize x dim x 1]"
 
     return dL_min, dL_max, param_l, param_u, activations_l, activations_u
+
+
+def combine_elementwise(method_1: Callable, method_2: Callable) -> Callable:
+    """
+    Given the two bounding methods (which can be either the forward or backward pass, for example), return a new
+    bounding function that calls both methods and takes the elementwise tightest of the two.
+
+    Args:
+        method_1 (Callable): First bounding function.
+        method_2 (Callable): Second bounding function.
+    Returns:
+        Callable: Combined bounding function.
+    """
+
+    def combined_method(*args, **kwargs):
+        """
+        Combined bounding function that returns the elementwise tightest bounds of the two methods.
+        """
+        l1, u1 = method_1(*args, **kwargs)
+        l2, u2 = method_2(*args, **kwargs)
+        l = [torch.maximum(a, b) for a, b in zip(l1, l2)]
+        u = [torch.minimum(a, b) for a, b in zip(u1, u2)]
+        return l, u
+
+    return combined_method
+
+
+def numpy_to_torch_wrapper(fn, *args, **kwargs):
+    """
+    Wrapper function to convert numpy arrays to torch tensors before calling the function.
+    """
+    args = [torch.from_numpy(a) if isinstance(a, np.ndarray) else a for a in args]
+    ret = fn(*args, **kwargs)
+    return tuple(r.detach().cpu().numpy() for r in ret)

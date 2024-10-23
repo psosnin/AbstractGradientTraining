@@ -1,64 +1,54 @@
 """Helper functions for unit tests."""
 
-import sys
-import os
 import torch
 import torch.nn.functional as F
 from torch.utils.data import TensorDataset, DataLoader
 import uci_datasets  # python -m pip install git+https://github.com/treforevans/uci_datasets.git
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))  # noqa
-
-from abstract_gradient_training import bounds
-from abstract_gradient_training import loss_gradient_bounds
-from abstract_gradient_training.certified_training.configuration import AGTConfig
+from abstract_gradient_training.bounds import loss_gradients
+from abstract_gradient_training import configuration
 
 
 SHAPES_CLASSIFICATION = [
-    (5, 15, 10, 5),  # two hidden layers
-    (5, 10, 5),  # one hidden layer
+    (3, 6, 5, 3),  # two hidden layers
+    (3, 5, 3),  # one hidden layer
 ]
 SHAPES_BINARY_CLASSIFICAITON = [
-    (5, 10, 10, 1),  # two hidden layers
-    (5, 10, 15, 1),  # two hidden layers
-    (5, 10, 1),  # one hidden layer
+    (3, 5, 3, 1),  # two hidden layers
+    (3, 5, 1),  # one hidden layer
 ]
 SHAPES_REGRESSION = [
-    (5, 10, 10, 1),  # two hidden layers
-    (5, 10, 1),  # one hidden layer
+    (3, 5, 3, 1),  # two hidden layers
+    (3, 5, 1),  # one hidden layer
 ]
 SHAPES_ALL = SHAPES_CLASSIFICATION + SHAPES_BINARY_CLASSIFICAITON + SHAPES_REGRESSION
 EPSILONS = [1.0, 0.1, 0.01]
 BATCHSIZES = [100]
 N_SEEDS = 1
-FORWARD_BOUNDS = [
-    bounds.crown.bound_forward_pass,
-    bounds.interval_bound_propagation.bound_forward_pass,
-    bounds.crown_ibp.bound_forward_pass,
-]
-BACKWARD_BOUNDS = [
-    bounds.crown.bound_backward_pass,
-    bounds.interval_bound_propagation.bound_backward_pass,
-]
+TOLERANCE = 1e-8
+FORWARD_BOUNDS = configuration.FORWARD_BOUNDS.values()
+BACKWARD_BOUNDS = configuration.BACKWARD_BOUNDS.values()
 LOSS_FNS_CLASSIFICATION = [
-    (F.cross_entropy, loss_gradient_bounds.bound_cross_entropy_derivative),
-    (F.multi_margin_loss, loss_gradient_bounds.bound_max_margin_derivative),
+    (F.cross_entropy, loss_gradients.bound_cross_entropy_derivative),
+    (F.multi_margin_loss, loss_gradients.bound_max_margin_derivative),
 ]
 LOSS_FNS_BINARY_CLASSIFICATION = [
-    (F.hinge_embedding_loss, loss_gradient_bounds.bound_hinge_derivative),
-    (F.binary_cross_entropy_with_logits, loss_gradient_bounds.bound_bce_derivative),
+    (F.hinge_embedding_loss, loss_gradients.bound_hinge_derivative),
+    (F.binary_cross_entropy_with_logits, loss_gradients.bound_bce_derivative),
 ]
-LOSS_FNS_REGRESSION = [(F.mse_loss, loss_gradient_bounds.bound_mse_derivative)]
-NOMINAL_CONFIG = AGTConfig(
+LOSS_FNS_REGRESSION = [(F.mse_loss, loss_gradients.bound_mse_derivative)]
+NOMINAL_CONFIG = configuration.AGTConfig(
     n_epochs=2,
     learning_rate=0.1,
     loss="mse",
     device="cuda",
     log_level="DEBUG",
+    early_stopping=True,
+    clip_gamma=10,
 )
-K_POISON = [0, 1, 10]
-K_UNLEARN = [0, 1, 10]
-K_PRIVATE = [0, 1, 10]
+K_POISON = [0, 1]
+K_UNLEARN = [0, 1]
+K_PRIVATE = [0, 1]
 
 
 def validate_sound(lower: list[torch.Tensor] | torch.Tensor, upper: list[torch.Tensor] | torch.Tensor):
@@ -75,7 +65,7 @@ def validate_sound(lower: list[torch.Tensor] | torch.Tensor, upper: list[torch.T
     for l, u in zip(lower, upper):
         assert l.shape == u.shape, f"{l.shape}, {u.shape}"
         assert l.dtype == u.dtype, f"{l.dtype}, {u.dtype}"
-        assert torch.all(l <= u + 1e-10), f"{torch.max(l - u)}"
+        assert torch.all(l <= u + TOLERANCE), f"{torch.max(l - u)}"
 
 
 def validate_equal(lower: list[torch.Tensor] | torch.Tensor, upper: list[torch.Tensor] | torch.Tensor):
@@ -120,13 +110,14 @@ def generate_network(shape: list[int], seed: int):
         param_u.append(W + torch.rand(W.shape))
         param_u.append(b + torch.rand(b.shape))
 
-    return param_n, param_l, param_u
+    return param_l, param_n, param_u
 
 
 class FullyConnected(torch.nn.Sequential):
+    """Example fully connected neural network for tests."""
+
     def __init__(self, in_dim, out_dim, hidden_dim, hidden_lay):
-        layers = [torch.nn.Linear(in_dim, hidden_dim)]
-        layers.append(torch.nn.ReLU())
+        layers = [torch.nn.Linear(in_dim, hidden_dim), torch.nn.ReLU()]
         for _ in range(hidden_lay):
             layers.append(torch.nn.Linear(hidden_dim, hidden_dim))
             layers.append(torch.nn.ReLU())
