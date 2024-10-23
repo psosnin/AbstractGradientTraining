@@ -5,7 +5,7 @@ from setuptools import setup
 
 setup(
     name="abstract_gradient_training",
-    version="0.1",
+    version="0.2",
     description="Abstract gradient training of neural networks",
     url="https://github.com/psosnin/abstract-gradient-training",
     author="Philip Sosnin",

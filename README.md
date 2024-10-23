@@ -69,6 +69,17 @@ This package uses a configuration object AGTConfig to pass hyperparameters into 
 | `noise_multiplier`    | float  | >= 0                                      | 0.0           | **Certified privacy and unlearning only** DP-SGD noise multiplier. Added noise has scale `clip_gamma * noise_multiplier`.                               |
 | `noise_type`    | str  | "gaussian", "laplace"                                   | "gaussian"           | **Certified privacy and unlearning only** Type of noise to add to gradients.                               |
 
+## Changelog
+
+### 0.1: Initial release
+
+### 0.2 (2024-10-23)
+
+- Added optimization-based bounds using MILP, MIQP, QCQP and LP solvers
+- Added `privacy_utils` module for computing tighter private prediction guarantees.
+- Added additional examples for poisoning, unlearning and privacy.
+- Changed how fixed convolutional layers are handled by certified training methods.
+
 ## References
 
 - [Certified Robustness to Data Poisoning in Gradient-Based Training](https://arxiv.org/pdf/2406.05670v1)
