@@ -5,7 +5,7 @@ from setuptools import setup
 
 setup(
     name="abstract_gradient_training",
-    version="0.2",
+    version="0.3",
     description="Abstract gradient training of neural networks",
     url="https://github.com/psosnin/abstract-gradient-training",
     author="Philip Sosnin",
@@ -17,14 +17,13 @@ setup(
         "torchvision >= 0.19",
         "pydantic >= 2.9",
         "gurobipy >= 10.0",
-        "gurobipy-stubs >= 2.0",
-        "numpy >= 2.1",
+        "numpy >= 1.9",
         "scipy >= 1.14",
-        "parameterized >= 0.9",
         "pytest >= 8.3",
     ],
     extras_require={
         "examples": [
+            "opacus >= 1.5",
             "seaborn >= 0.13",
             "matplotlib >= 3.9",
             "medmnist >= 3.0",
