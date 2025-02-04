@@ -8,22 +8,29 @@ Install the package using pip:
 
 ```pip install git+https://github.com/psosnin/AbstractGradientTraining```
 
-## Getting started
+## Usage
 
-To train a `torch.nn.Sequential` model with abstract gradient training, you must set up a dataloader, model and configuration object and then call the corresponding certified training method (poisoning, unlearning or privacy).
+To train a PyTorch model with abstract gradient training, follow these steps:
+
+1. **Define your model and dataloaders**: Create your PyTorch model and dataloaders as usual.
+2. **Wrap the model**: Create a bounded version of your model using the wrappers provided in the `bounded_models` module. This wrapper supports computing bounds over the parameters and gradients of the model.
+3. **Configure and train**: Set up the training configuration and initiate training with either privacy, unlearning, or poisoning certification.
+
 
 ```python
 import torch
 import abstract_gradient_training as agt
-# set up dataloaders
+# set up the training and validation dataloaders
 dl_train = torch.utils.data.DataLoader(train_dataset, batch_size=1000)
-dl_test = torch.utils.data.DataLoader(test_dataset, batch_size=1000)
+dl_val = torch.utils.data.DataLoader(val_dataset, batch_size=1000)
 # set up pytorch model
 model = torch.nn.Sequential(
     torch.nn.Linear(784, 128),
     torch.nn.ReLU(),
     torch.nn.Linear(128, 10)
 )
+# wrap the model
+bounded_model = agt.bounded_models.IntervalBoundedModel(model)
 # set up configuration object
 config = agt.AGTConfig(
     n_epochs=10,
@@ -32,53 +39,59 @@ config = agt.AGTConfig(
     epsilon=0.01,
     loss="cross_entropy"
 )
-# run certified training
-param_l, param_n, param_u = agt.poison_certified_training(model, config, dl_train, dl_test)
+# train the model using abstract gradient training
+agt.poison_certified_training(bounded_model, config, dl_train, dl_val)
+# get certified bounds on the logits of the trained model
+logits = bounded_model.forward(test_point)
+logits_l, logits_u = bounded_model.bound_forward(test_point)
 ```
 
-Additional usage examples can be found in the `examples` directory.
+Additional tutorials can be found in the `notebooks` directory. Scripts for generating the figures from the papers below can be found in the `scripts` directory.
 
-## Configuration
+### Configuration
 
-This package uses a configuration object AGTConfig to pass hyperparameters into the certified training methods. The following table lists the available hyperparameters:
+This package uses a configuration object AGTConfig to pass hyperparameters into the certified training methods. Please
+refer to the options provided in `abstract_gradient_training/configuration.py` for a full list of available
+hyperparameters.
 
-| Parameter         | Type   | Allowed Values                           | Default Value | Description                                                                  |
-|-------------------|--------|------------------------------------------|---------------|------------------------------------------------------------------------------|
-| `n_epochs`        | int    | > 0                                       | N/A           | Number of epochs for training.                                               |
-| `learning_rate`   | float  | > 0                                       | N/A           | Learning rate for the optimizer.                                             |
-| `l1_reg`          | float  | >= 0                                      | 0.0           | L1 regularization parameter.                                                 |
-| `l2_reg`          | float  | >= 0                                      | 0.0           | L2 regularization parameter.                                                 |
-| `lr_decay`          | float  | >= 0                                      | 0.0           | Learning rate decay factor. lr ~ (1 / (1 + decay_rate * batch_no))                                                 |
-| `lr_min`          | float  | >= 0                                      | 0.0           | Minimum learning rate for decay scheduler.                                                 |
-| `loss`            | str    | "cross_entropy", "binary_cross_entropy", "max_margin", "mse", "hinge" | N/A           | Loss function.                                                               |
-| `device`          | str    | Any                                       | "cpu"         | Device for training (e.g., "cpu" or "cuda").                                 |
-| `log_level`       | str    | "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL" | "INFO"       | Logging level.                                                               |
-| `forward_bound`   | str    | "interval", "crown", "interval,crown", "miqp", "milp", "qcqp", "lp"      | "interval"    | Forward bounding method.                                                     |
-| `backward_bound`  | str    |"interval", "crown", "miqp", "qcqp" | "interval"    | Backward bounding method.                                                    |
-| `bound_kwargs`    | dict   | Any                                       | {}            | Additional keyword arguments for bounding methods. See individual bounding methods for details.                           |
-| `fragsize`        | int    | > 0                                       | 10000         | Size of fragments to split each batch into to pass into the bounding methods. Larger is faster but requires more memory.                                          |
-| `k_poison`        | int    | >= 0                                      | 0             | **Certified poisoning only** Number of poisoned samples.                                                  |
-| `epsilon`         | float  | >= 0                                      | 0.0           | **Certified poisoning only** Epsilon value for poisoning.                                                 |
-| `label_k_poison`  | int    | >= 0                                      | 0             | **Certified poisoning only** Number of label-poisoned samples.                                            |
-| `label_epsilon`   | float  | >= 0                                      | 0.0           | **Certified poisoning only** Epsilon value for label poisoning.                                           |
-| `poison_target`   | int    | >= 0                                      | -1            | **Certified poisoning only** Target index for poisoning.                                                  |
-| `k_unlearn`       | int    | >= 0                                      | 0             | **Certified unlearning only** Number of samples to unlearn.                                                |
-| `k_private`       | int    | >= 0                                      | 0             | **Certified privacy only** Number of private samples.                                                   |
-| `clip_gamma`      | float  | > 0                                       | `inf`         | **Certified privacy and unlearning only** Gradient clipping level.                           |
-| `clip_method`      | str  | "norm", "clamp"                            | "clamp"          | **Certified privacy and unlearning only** Type of gradient clipping to use.                           |
-| `noise_multiplier`    | float  | >= 0                                      | 0.0           | **Certified privacy and unlearning only** DP-SGD noise multiplier. Added noise has scale `clip_gamma * noise_multiplier`.                               |
-| `noise_type`    | str  | "gaussian", "laplace"                                   | "gaussian"           | **Certified privacy and unlearning only** Type of noise to add to gradients.                               |
+### GPU memory usage
+
+Abstract gradient training often requires training with large batchsizes. This can lead to out-of-memory errors on GPUs with limited memory. To mitigate this, the package provides a `fragsize` parameter in the configuration object. This parameter controls the size of fragments that each batch is split into before computing bounds over the gradients. Larger values of `fragsize` will reduce the number of fragments per batch and improve performance, but will require more memory. If you encounter out-of-memory errors, try reducing the value of `fragsize`.
+
+
+### Floating point stability
+
+The implementation of the verification algorithms in this package do not take into account floating point soundness. Under certain conditions, the returned bounds may not be sound due to issues with numerical precision. Any issues will be detected and logged as warnings or errors by the package. If you encounter such a warning, it is recommended to switch to using a double precision data type (e.g. `torch.float64`) for the model parameters and training data. If warnings persist after switching to double precision, this indicates a potential error.
+
+### Batchsize handling
+
+The training batchsize has a significant effect on the tightness of the bounds at each iteration. Therefore, the certified training methods require a fixed batchsize for the entire training process and any incomplete batches are discarded. When using PyTorch dataloaders, this typically results in the last batch per epoch being skipped, which may lead to unexpected behavior.
 
 ## Changelog
 
-### 0.1: Initial release
+### 2025-02-04
 
-### 0.2 (2024-10-23)
+- Tweaked differential privacy certification.
+- Updated scripts for reproducing figures from the papers.
 
-- Added optimization-based bounds using MILP, MIQP, QCQP and LP solvers
+### 2024-12-04
+
+- Support arbitrary shaped PyTorch models and additional modules.
+- Change interface to bounding methods via the `bounded_models` module
+- Change interface to loss functions and optimizers via the `bounded_losses` and `bounded_optimizers` modules.
+- Added optimized linear bound propagation (alpha-CROWN) bounds.
+- Added scripts to replicate figures from the papers.
+
+### 2024-10-23
+
+- Added optimization-based bounds using MILP, MIQP, QCQP and LP solvers.
 - Added `privacy_utils` module for computing tighter private prediction guarantees.
 - Added additional examples for poisoning, unlearning and privacy.
 - Changed how fixed convolutional layers are handled by certified training methods.
+
+### Initial release
+
+- Added abstract gradient training methods for poisoning, unlearning and differential privacy.
 
 ## References
 

@@ -17,8 +17,8 @@ def propagate_affine(
     x_u: torch.Tensor,
     W_l: torch.Tensor,
     W_u: torch.Tensor,
-    b_l: torch.Tensor,
-    b_u: torch.Tensor,
+    b_l: torch.Tensor | None = None,
+    b_u: torch.Tensor | None = None,
     interval_matmul: Literal["rump", "exact", "nguyen"] = "rump",
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
@@ -29,17 +29,21 @@ def propagate_affine(
         x_u (torch.Tensor): Upper bound of the input tensor x.
         W_l (torch.Tensor): Lower bound of the weight matrix A.
         W_u (torch.Tensor): Upper bound of the weight matrix A.
-        b_l (torch.Tensor): Lower bound of the bias vector b.
-        b_u (torch.Tensor): Upper bound of the bias vector b.
+        b_l (torch.Tensor | None): Lower bound of the bias vector b.
+        b_u (torch.Tensor | None): Upper bound of the bias vector b.
         interval_matmul (str): Method to use for interval matmul, one of ["rump", "exact", "nguyen"].
 
     Returns:
         e_l (torch.Tensor): Lower bound of the output tensor.
         e_u (torch.Tensor): Upper bound of the output tensor.
     """
-    validate_interval(b_l, b_u)
     h_l, h_u = propagate_matmul(W_l, W_u, x_l, x_u, interval_matmul)
-    return h_l + b_l, h_u + b_u
+    if b_l is not None or b_u is not None:
+        assert b_u is not None, "Upper bound of bias tensor must be provided if lower bound is provided"
+        assert b_l is not None, "Lower bound of bias tensor must be provided if upper bound is provided"
+        validate_interval(b_l, b_u)
+        h_l, h_u = h_l + b_l, h_u + b_u
+    return h_l, h_u
 
 
 def propagate_matmul(
@@ -63,8 +67,8 @@ def propagate_matmul(
         H_l (torch.Tensor): Lower bound of the output tensor.
         H_u (torch.Tensor): Upper bound of the output tensor.
     """
-    validate_interval(A_l, A_u)
-    validate_interval(B_l, B_u)
+    validate_interval(A_l, A_u, msg="input interval A")
+    validate_interval(B_l, B_u, msg="input interval B")
     if interval_matmul == "rump":
         H_l, H_u = propagate_matmul_rump(A_l, A_u, B_l, B_u)
     elif interval_matmul == "exact":
@@ -73,7 +77,7 @@ def propagate_matmul(
         H_l, H_u = propagate_matmul_nguyen(A_l, A_u, B_l, B_u)
     else:
         raise ValueError(f"Unknown interval matmul method: {interval_matmul}")
-    validate_interval(H_l, H_u)
+    validate_interval(H_l, H_u, msg="output interval")
     return H_l, H_u
 
 
@@ -151,11 +155,13 @@ def propagate_matmul_nguyen(
     A0_u = torch.where(condition, A_u, A0_u)
     Astar_neg_l = torch.where(condition, A_l + A_u, Astar_neg_l)
 
-    assert torch.allclose(A_l, A0_l + Astar_pos_l + Astar_neg_l)
-    assert torch.allclose(A_u, A0_u + Astar_pos_u + Astar_neg_u)
-    assert torch.allclose(A0_l + A0_u, torch.zeros_like(A0_l))
-    assert torch.all((Astar_neg_l <= 0) & (Astar_neg_u <= 0))
-    assert torch.all((Astar_pos_l >= 0) & (Astar_pos_u >= 0))
+    # these asserts are only valid when the input bounds aren't inf or nan
+    if A_l.isfinite().all() and A_u.isfinite().all():
+        assert torch.allclose(A_l, A0_l + Astar_pos_l + Astar_neg_l)
+        assert torch.allclose(A_u, A0_u + Astar_pos_u + Astar_neg_u)
+        assert torch.allclose(A0_l + A0_u, torch.zeros_like(A0_l))
+        assert torch.all((Astar_neg_l <= 0) & (Astar_neg_u <= 0))
+        assert torch.all((Astar_pos_l >= 0) & (Astar_pos_u >= 0))
 
     # compute the interval A0 @ B
     H_u = A0_u @ torch.maximum(torch.abs(B_l), torch.abs(B_u))
@@ -192,8 +198,27 @@ def propagate_matmul_exact(
         H_l (torch.Tensor): Lower bound of the output tensor.
         H_u (torch.Tensor): Upper bound of the output tensor.
     """
-    E_l, E_u = propagate_elementwise(A_l.unsqueeze(-1), A_u.unsqueeze(-1), B_l.unsqueeze(-3), B_u.unsqueeze(-3))
-    return E_l.sum(-2), E_u.sum(-2)
+    if A_l.dim() == B_l.dim() + 1:  # the case of [... x m x n] @ [... x n]
+        assert A_l.size(-1) == B_l.size(-1), f"Expected [...x m x n] @ [...x n], got {A_l.shape} @ {B_l.shape}"
+        assert A_l.shape[:-2] == B_l.shape[:-1], f"Expected [...x m x n] @ [...x n], got {A_l.shape} @ {B_l.shape}"
+        B_l, B_u = B_l.unsqueeze(-2), B_u.unsqueeze(-2)  # shape [... x 1 x n]
+        E_l, E_u = propagate_elementwise(A_l, A_u, B_l, B_u)  #  shape [... x m x n]
+        E_l, E_u = E_l.sum(-1), E_u.sum(-1)  # shape [... x m]
+    elif A_l.dim() == B_l.dim():  # the case of [... x m x n] @ [... x n x p]
+        assert A_l.size(-1) == B_l.size(-2), f"Expected [...x m x n] @ [...x n x 1], got {A_l.shape} @ {B_l.shape}"
+        assert A_l.shape[:-2] == B_l.shape[:-2], f"Expected [...x m x n] @ [...x n x 1], got {A_l.shape} @ {B_l.shape}"
+        A_l, A_u = A_l.unsqueeze(-1), A_u.unsqueeze(-1)  # shape [... x m x n x 1]
+        B_l, B_u = B_l.unsqueeze(-3), B_u.unsqueeze(-3)  # shape [... x 1 x n x p]
+        E_l, E_u = propagate_elementwise(A_l, A_u, B_l, B_u)  # shape [ ... x m x n x p]
+        E_l, E_u = E_l.sum(-2), E_u.sum(-2)  # shape [... x m x p]
+    elif A_l.dim() + 1 == B_l.dim():  # the case of [... x m] * [... x m x n]
+        assert A_l.size(-1) == B_l.size(-2), f"Expected [...x m] @ [...x m x n], got {A_l.shape} @ {B_l.shape}"
+        A_l, A_u = A_l.unsqueeze(-1), A_u.unsqueeze(-1)  # shape [... x m x 1]
+        E_l, E_u = propagate_elementwise(A_l, A_u, B_l, B_u)  # shape [... x m x n]
+        E_l, E_u = E_l.sum(-2), E_u.sum(-2)  # shape [... x n]
+    else:
+        raise ValueError(f"Invalid shapes for matrix multiplication: {A_l.shape} * {B_l.shape}")
+    return E_l, E_u
 
 
 def propagate_elementwise(
@@ -358,34 +383,54 @@ def propagate_softmax(A_l: torch.Tensor, A_u: torch.Tensor) -> tuple[torch.Tenso
     Compute an interval bound on the softmax function given an interval over the input logits.
 
     Args:
-        A_l (torch.Tensor): [batchsize x output_dim x 1] Lower bound of the input logits.
-        A_u (torch.Tensor): [batchsize x output_dim x 1] Upper bound of the input logits.
+        A_l (torch.Tensor): Lower bound of the input logits.
+        A_u (torch.Tensor): Upper bound of the input logits.
 
     Returns:
-        y_l (torch.Tensor): [batchsize x output_dim x 1] Lower bound of the output probabilities.
-        y_u (torch.Tensor): [batchsize x output_dim x 1] Upper bound of the output probabilities.
+        y_l (torch.Tensor): Lower bound of the output probabilities.
+        y_u (torch.Tensor): Upper bound of the output probabilities.
     """
-    validate_interval(A_l, A_u)
-    if len(A_l.shape) != 3:
-        raise NotImplementedError("Only batched input supported for propagate softmax")
+    validate_interval(A_l, A_u, msg="input interval")
+    assert A_l.dim() >= 2, "Expected input logits to have at least 2 dimensions"
+    assert A_l.size() == A_u.size(), "Expected input logit bounds to have the same shape"
+    input_shape = A_l.shape
+    A_l = A_l.view(A_l.size(0), -1, 1)  # reshape to (batch, num_classes, 1), softmax is taken over the num_classes dim
+    A_u = A_u.view(A_u.size(0), -1, 1)  # reshape to (batch, num_classes, 1)
     I = torch.eye(A_l.shape[-2]).type(A_l.dtype).unsqueeze(0).to(A_l.device)
     # calculate bounds on the post-softmax output by choosing the best and worst case logits for each class output.
-    y_l = torch.diagonal(torch.nn.Softmax(dim=-2)((I * A_l + (1 - I) * A_u)), dim1=-2, dim2=-1).unsqueeze(-1)
-    y_u = torch.diagonal(torch.nn.Softmax(dim=-2)((I * A_u + (1 - I) * A_l)), dim1=-2, dim2=-1).unsqueeze(-1)
-    return y_l, y_u
+    y_l = torch.diagonal(torch.nn.functional.softmax(I * A_l + (1 - I) * A_u, dim=-2), dim1=-2, dim2=-1)
+    y_u = torch.diagonal(torch.nn.functional.softmax(I * A_u + (1 - I) * A_l, dim=-2), dim1=-2, dim2=-1)
+    validate_interval(y_l, y_u, msg="final interval")
+    return y_l.reshape(input_shape), y_u.reshape(input_shape)
 
 
-def validate_interval(l: torch.Tensor, u: torch.Tensor, n: torch.Tensor | None = None, msg: str = "") -> None:
+def validate_interval(
+    l: torch.Tensor | list[torch.Tensor],
+    u: torch.Tensor | list[torch.Tensor],
+    n: torch.Tensor | list[torch.Tensor] | None = None,
+    msg: str = "",
+) -> None:
     """
     Validate an arbitrary interval n in [l, u] and log any violations of the bound at a level based on the size of the
-    violation.
+    violation. The function either takes in tensors or lists of tensors, in which case it will validate each pair of
+    bounds in the list.
 
     Args:
-        l (torch.Tensor): Lower bound of the interval.
-        u (torch.Tensor): Upper bound of the interval.
-        n (torch.Tensor | None, optional): Nominal value of the interval. Defaults to None.
+        l (torch.Tensor | list[torch.Tensor]): Lower bound of the interval(s).
+        u (torch.Tensor | list[torch.Tensor]): Upper bound of the interval(s).
+        n (torch.Tensor | list[torch.Tensor] | None, optional): Nominal value of the interval(s). Defaults to None.
         msg (str, optional): Optional message to log with the bound violation for debugging purposes.
     """
+    if isinstance(l, list) and n is not None:
+        for i, (li, ui, ni) in enumerate(zip(l, u, n)):
+            validate_interval(li, ui, ni, msg=f"{msg} (element {i})")
+        return
+    elif isinstance(l, list):
+        for i, (li, ui) in enumerate(zip(l, u)):
+            validate_interval(li, ui, msg=f"{msg} (element {i})")
+        return
+
+    assert isinstance(l, torch.Tensor) and isinstance(u, torch.Tensor)
     if n is None:
         diff = torch.max(l - u).item()
     else:
