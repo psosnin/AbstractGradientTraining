@@ -234,42 +234,46 @@ def dataloader_cycle(dl: Iterable) -> Iterator[tuple[torch.Tensor, torch.Tensor]
 
 
 def propagate_clipping(
-    x_l: torch.Tensor, x: torch.Tensor, x_u: torch.Tensor, gamma: float, method: str
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    x_l: list[torch.Tensor], x: list[torch.Tensor], x_u: list[torch.Tensor], gamma: float, method: str
+) -> tuple[list[torch.Tensor], list[torch.Tensor], list[torch.Tensor]]:
     """
     Propagate the input through a clipping operation. This function is used to clip the gradients in the
     DP-SGD algorithm.
 
     Args:
-        x_l (torch.Tensor): Lower bound of the input tensor.
-        x_u (torch.Tensor): Upper bound of the input tensor.
+        x_l (list[torch.Tensor]): Lower bound of the input tensors.
+        x (list[torch.Tensor] | None): Optional nominal input tensor.
+        x_u (list[torch.Tensor]): Upper bound of the input tensors.
         gamma (float): Clipping parameter.
         method (str): Clipping method, one of ["clamp", "norm"].
 
     Returns:
-        tuple[torch.Tensor, torch.Tensor, torch.Tensor]: Tuple of the lower, nominal and upper bounds of the clipped
-            input tensor.
+        list[torch.Tensor]: Lower bound on the clipped input tensor.
+        list[torch.Tensor]: Nominal clipped input tensor.
+        list[torch.Tensor]: Upper bound on the clipped input tensor.
     """
     if method == "clamp":
-        x_l = torch.clamp(x_l, -gamma, gamma)
-        x = torch.clamp(x, -gamma, gamma)
-        x_u = torch.clamp(x_u, -gamma, gamma)
+        interval_arithmetic.validate_interval(x_l, x_u, msg="input")
+        x_l = [xi.clamp_(-gamma, gamma) for xi in x_l]
+        x = [xi.clamp_(-gamma, gamma) for xi in x]
+        x_u = [xi.clamp_(-gamma, gamma) for xi in x_u]
     elif method == "norm":
         interval_arithmetic.validate_interval(x_l, x_u, msg="input")
-        # compute interval over the norm of the input interval
-        norms = x.flatten(1).norm(2, dim=1)
-        norms_l, norms_u = interval_arithmetic.propagate_norm(x_l, x_u, p=2)
-        interval_arithmetic.validate_interval(norms_l, norms_u, msg="norm")
-        # compute an interval over the clipping factor
-        clip_factor = (gamma / (norms + 1e-6)).clamp(max=1.0)
-        clip_factor_l = (gamma / (norms_u + 1e-6)).clamp(max=1.0)
-        clip_factor_u = (gamma / (norms_l + 1e-6)).clamp(max=1.0)
-        interval_arithmetic.validate_interval(clip_factor_l, clip_factor_u, msg="clip factor")
-        # compute an interval over the clipped input
-        x_l, x_u = interval_arithmetic.propagate_elementwise(
-            x_l, x_u, clip_factor_l.view(-1, 1, 1), clip_factor_u.view(-1, 1, 1)
-        )
-        x = x * clip_factor.view(-1, 1, 1)
+        for i in range(len(x_l)):
+            # compute interval over the norm of the input interval
+            norms = x[i].flatten(1).norm(2, dim=1)
+            norms_l, norms_u = interval_arithmetic.propagate_norm(x_l[i], x_u[i], p=2)
+            interval_arithmetic.validate_interval(norms_l, norms_u, msg="norm")
+            # compute an interval over the clipping factor
+            clip_factor = (gamma / (norms + 1e-6)).clamp(max=1.0)
+            clip_factor_l = (gamma / (norms_u + 1e-6)).clamp(max=1.0)
+            clip_factor_u = (gamma / (norms_l + 1e-6)).clamp(max=1.0)
+            interval_arithmetic.validate_interval(clip_factor_l, clip_factor_u, msg="clip factor")
+            # compute an interval over the clipped input
+            x_l[i], x_u[i] = interval_arithmetic.propagate_elementwise(
+                x_l[i], x_u[i], clip_factor_l.view(-1, 1, 1), clip_factor_u.view(-1, 1, 1)
+            )
+            x[i] = x[i] * clip_factor.view(-1, 1, 1)
         interval_arithmetic.validate_interval(x_l, x_u, msg="clipped input")
     else:
         raise ValueError(f"Clipping method {method} not recognised.")
@@ -306,7 +310,6 @@ def log_run_start(config: AGTConfig, agt_type: Literal["poison", "privacy", "unl
 
     # log gradient clipping and noise
     LOGGER.debug("\tGradient clipping: gamma=%s, method=%s", config.clip_gamma, config.clip_method)
-    LOGGER.debug("\tGradient noise: type=%s, multiplier=%s", config.noise_type, config.noise_multiplier)
 
     # log type-specific parameters
     if agt_type == "poison":

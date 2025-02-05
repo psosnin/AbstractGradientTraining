@@ -56,8 +56,7 @@ hyperparameters.
 
 ### GPU memory usage
 
-Abstract gradient training often requires training with large batchsizes. This can lead to out-of-memory errors on GPUs with limited memory. To mitigate this, the package provides a `fragsize` parameter in the configuration object. This parameter controls the size of fragments that each batch is split into before computing bounds over the gradients. Larger values of `fragsize` will reduce the number of fragments per batch and improve performance, but will require more memory. If you encounter out-of-memory errors, try reducing the value of `fragsize`.
-
+Abstract gradient training often requires training with large batchsizes. This can lead to out-of-memory errors on GPUs with limited memory. To mitigate this, the package provides a `fragsize` parameter in the configuration object. This parameter controls the size of fragments that each batch is split into before computing bounds over the gradients. This separates physical steps (computing gradients over each batch fragment) and logic steps (applying the certified training update rules) while keeping memory usage low. This logic is handled internally using the `gradient_accumulation` module. Larger values of `fragsize` will reduce the number of fragments per batch and improve performance, but will require more memory. If you encounter out-of-memory errors, try reducing the value of `fragsize`.
 
 ### Floating point stability
 
@@ -69,10 +68,12 @@ The training batchsize has a significant effect on the tightness of the bounds a
 
 ## Changelog
 
-### 2025-02-04
+### 2025-02-05
 
 - Tweaked differential privacy certification.
 - Updated scripts for reproducing figures from the papers.
+- Simplified handling of physical vs logical batches.
+- Fixed GPU memory collection inside the main training loops.
 
 ### 2024-12-04
 
