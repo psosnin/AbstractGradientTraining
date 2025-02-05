@@ -178,7 +178,7 @@ def compute_local_epsilons(
     local_epsilons = 2 * math.log(2 / delta) * scipy.special.lambertw(epsilon * k_star / math.log(2 / delta)) / k_star
     # convert back to tensor. note that lambertw returns a complex number, but in our case the imaginary part is zero.
     local_epsilons = torch.tensor(local_epsilons.real, dtype=torch.float32, device=batch.device)
-    local_epsilons = local_epsilons.clamp(0, epsilon) if clamp else local_epsilons
+    local_epsilons = local_epsilons.clamp_(0, epsilon) if clamp else local_epsilons
     return local_epsilons
 
 

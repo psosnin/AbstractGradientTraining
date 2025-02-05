@@ -30,7 +30,6 @@ EXCLUDE_FIELDS = [
     "on_iter_end_callback",
     "on_iter_start_callback",
     "model_config",
-    "noise_distribution",
     "bounded_loss_fn",
     "val_loss",
     "bounded_optimizer_fn",
@@ -74,12 +73,6 @@ class AGTConfig(pydantic.BaseModel, extra="forbid", arbitrary_types_allowed=True
     k_private: int = pydantic.Field(0, ge=0, description="Number of removals/insertions per batch to be certified")
     clip_gamma: float = pydantic.Field(float("inf"), gt=0, description="Gradient clipping parameter")
     clip_method: Literal["norm", "clamp"] = pydantic.Field("clamp", description="Method for clipping gradients")
-    noise_multiplier: float = pydantic.Field(
-        0, ge=0, description="Multiplier of the privacy-preserving noise added to gradients."
-    )
-    noise_type: Literal["gaussian", "laplace"] = pydantic.Field(
-        "gaussian", description="Type of privacy-preserving noise to add to gradients"
-    )
     metadata: str = pydantic.Field("", description="Additional metadata to store with the configuration")
 
     # callback functions
@@ -136,23 +129,6 @@ class AGTConfig(pydantic.BaseModel, extra="forbid", arbitrary_types_allowed=True
             return bounded_optimizers.BoundedSGDM(model, **optimizer_kwargs)
         else:
             raise ValueError(f"Unknown optimizer {self.optimizer}")
-
-    def get_noise_distribution(self) -> Callable[[torch.Size], torch.Tensor]:
-        """Return a function to sample the noise distribution based on the noise_type."""
-        if self.noise_multiplier == 0:
-            distribution = torch.zeros
-        elif self.clip_gamma == float("inf"):
-            raise ValueError(
-                f"If clip_gamma is infinite, then noise_multiplier must be 0, but got {self.noise_multiplier}"
-            )
-        elif self.noise_type == "gaussian":
-            distribution = torch.distributions.Normal(0, self.noise_multiplier * self.clip_gamma).sample
-        elif self.noise_type == "laplace":
-            distribution = torch.distributions.Laplace(0, self.noise_multiplier * self.clip_gamma).sample
-        else:
-            raise ValueError(f"Unknown noise type {self.noise_type}")
-        # return a function that samples the distribution (and also moves it to the correct device)
-        return lambda x: distribution(x).to(self.device)
 
     def hash(self, drop_fields: list[str] = EXCLUDE_FIELDS) -> str:
         """Return a hash of the configuration, used for tracking experiments. Should not be used for dynamic storage of

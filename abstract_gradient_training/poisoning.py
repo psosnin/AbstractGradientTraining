@@ -1,13 +1,15 @@
 """Poison certified training."""
 
 from __future__ import annotations
-import logging
 from collections.abc import Iterable
+import logging
+import gc
 
 import torch
 
 from abstract_gradient_training import training_utils
 from abstract_gradient_training import interval_arithmetic
+from abstract_gradient_training.gradient_accumulation import PoisoningGradientAccumulator
 from abstract_gradient_training.configuration import AGTConfig
 from abstract_gradient_training.bounded_models import BoundedModel
 
@@ -49,10 +51,15 @@ def poison_certified_training(
     else:
         k_poison = config.k_poison + config.label_k_poison
 
+    # initialise the gradient accumulation class, which handles the logic of accumulating gradients across batch
+    # fragments and computing the certified descent direction bounds.
+    gradient_accumulator = PoisoningGradientAccumulator(k_poison, bounded_model.param_n)
+
     # returns an iterator of length n_epochs x batches_per_epoch to handle incomplete batch logic
     training_iterator = training_utils.dataloader_pair_wrapper(dl_train, dl_clean, config.n_epochs)
     val_iterator = training_utils.dataloader_cycle(dl_val) if dl_val is not None else None
 
+    # main training loop
     for n, (batch, labels, batch_clean, labels_clean) in enumerate(training_iterator, 1):
         config.on_iter_start_callback(bounded_model)
         # possibly terminate early
@@ -64,92 +71,68 @@ def poison_certified_training(
             loss = training_utils.compute_loss(bounded_model, config.get_val_loss_fn(), *next(val_iterator))
             LOGGER.info(f"Batch {n}. Loss ({config.val_loss}): {loss[0]:.3f} <= {loss[1]:.3f} <= {loss[2]:.3f}")
 
-        # initialise containers to store the nominal and bounds on the gradients for each fragment
-        # the bounds are stored as lists of lists indexed by [parameter, fragment]
-        grads_n = [torch.zeros_like(p) for p in bounded_model.param_n]  # nominal gradients
-        grads_u = [torch.zeros_like(p) for p in bounded_model.param_n]  # upper bound gradients
-        grads_l = [torch.zeros_like(p) for p in bounded_model.param_n]  # lower bound gradients
-        grads_diffs_l = [[] for _ in bounded_model.param_n]  # difference of input+weight and weight perturbed bounds
-        grads_diffs_u = [[] for _ in bounded_model.param_n]  # difference of input+weight and weight perturbed bounds
+        # NOTE: We have a lot of per-sample operations that must be performed on the entire batchsize, with typically
+        # very large batchsizes. To conserve memory, we split the batch into fragments and process each fragment
+        # separately and accumulate the gradients across fragments using the gradient_accumulator classes.
 
         # process clean data
         batch_fragments = torch.split(batch_clean, config.fragsize, dim=0) if batch_clean is not None else []
         label_fragments = torch.split(labels_clean, config.fragsize, dim=0) if labels_clean is not None else []
         for batch_frag, label_frag in zip(batch_fragments, label_fragments):
-            # nominal pass
+            # compute nominal pass
             frag_grads_n = training_utils.compute_batch_gradients(
                 bounded_model, batch_frag, label_frag, config, nominal=True, poisoned=False
             )
-            # weight perturbed bounds
+            # compute weight perturbed bounds
             frag_grads_wp_l, frag_grads_wp_u = training_utils.compute_batch_gradients(
                 bounded_model, batch_frag, label_frag, config, nominal=False, poisoned=False
             )
-            # clip and accumulate the gradients
-            for i in range(len(grads_n)):
-                frag_grads_wp_l[i], frag_grads_n[i], frag_grads_wp_u[i] = training_utils.propagate_clipping(
-                    frag_grads_wp_l[i], frag_grads_n[i], frag_grads_wp_u[i], config.clip_gamma, config.clip_method
-                )
-                # accumulate the gradients
-                grads_l[i] = grads_l[i] + frag_grads_wp_l[i].sum(dim=0)
-                grads_n[i] = grads_n[i] + frag_grads_n[i].sum(dim=0)
-                grads_u[i] = grads_u[i] + frag_grads_wp_u[i].sum(dim=0)
+            # clip the gradients
+            frag_grads_wp_l, frag_grads_n, frag_grads_wp_u = training_utils.propagate_clipping(
+                frag_grads_wp_l, frag_grads_n, frag_grads_wp_u, config.clip_gamma, config.clip_method
+            )
+            # accumulate the gradients
+            gradient_accumulator.add_clean_fragment_gradients(frag_grads_n, frag_grads_wp_l, frag_grads_wp_u)
+            # the gpu memory allocations at each loop are not always collected, so we'll prompt pytorch to do so
+            gc.collect()
+            torch.cuda.empty_cache()
 
         # process potentially poisoned data
         batch_fragments = torch.split(batch, config.fragsize, dim=0)
         label_fragments = torch.split(labels, config.fragsize, dim=0)
         for batch_frag, label_frag in zip(batch_fragments, label_fragments):
-            # nominal pass
+            # compute nominal gradients
             frag_grads_n = training_utils.compute_batch_gradients(
                 bounded_model, batch_frag, label_frag, config, nominal=True, poisoned=False
             )
-            # weight perturbed bounds
+            # compute weight perturbed gradients
             frag_grads_wp_l, frag_grads_wp_u = training_utils.compute_batch_gradients(
                 bounded_model, batch_frag, label_frag, config, nominal=False, poisoned=False
             )
-            # clip and accumulate the gradients
-            for i in range(len(grads_n)):
-                frag_grads_wp_l[i], frag_grads_n[i], frag_grads_wp_u[i] = training_utils.propagate_clipping(
-                    frag_grads_wp_l[i], frag_grads_n[i], frag_grads_wp_u[i], config.clip_gamma, config.clip_method
-                )
-                # accumulate the gradients
-                grads_l[i] = grads_l[i] + frag_grads_wp_l[i].sum(dim=0)
-                grads_n[i] = grads_n[i] + frag_grads_n[i].sum(dim=0)
-                grads_u[i] = grads_u[i] + frag_grads_wp_u[i].sum(dim=0)
-            # input + weight perturbed bounds
+            # compute the input+weight perturbed gradients
             frag_grads_iwp_l, frag_grads_iwp_u = training_utils.compute_batch_gradients(
                 bounded_model, batch_frag, label_frag, config, nominal=False, poisoned=True
             )
-            # clip and accumulate the gradients
-            for i in range(len(grads_n)):
-                frag_grads_iwp_l[i], _, frag_grads_iwp_u[i] = training_utils.propagate_clipping(
-                    frag_grads_iwp_l[i], torch.zeros(1), frag_grads_iwp_u[i], config.clip_gamma, config.clip_method
-                )
-                # calculate the differences beetween the input+weight perturbed and weight perturbed bounds
-                diffs_l = frag_grads_iwp_l[i] - frag_grads_wp_l[i]
-                diffs_u = frag_grads_iwp_u[i] - frag_grads_wp_u[i]
-                # accumulate and store the the top-k diffs from each fragment
-                grads_diffs_l[i].append(torch.topk(diffs_l, k_poison, dim=0, largest=False)[0])
-                grads_diffs_u[i].append(torch.topk(diffs_u, k_poison, dim=0)[0])
+            # apply gradient clipping
+            frag_grads_wp_l, frag_grads_n, frag_grads_wp_u = training_utils.propagate_clipping(
+                frag_grads_wp_l, frag_grads_n, frag_grads_wp_u, config.clip_gamma, config.clip_method
+            )
+            frag_grads_iwp_l, _, frag_grads_iwp_u = training_utils.propagate_clipping(
+                frag_grads_iwp_l, frag_grads_n, frag_grads_iwp_u, config.clip_gamma, config.clip_method
+            )
+            # accumulate the gradients
+            gradient_accumulator.add_poisoned_fragment_gradients(
+                frag_grads_n, frag_grads_wp_l, frag_grads_wp_u, frag_grads_iwp_l, frag_grads_iwp_u
+            )
+            # the gpu memory allocations at each loop are not always collected, so we'll prompt pytorch to do so
+            gc.collect()
+            torch.cuda.empty_cache()
 
-        # accumulate the top-k diffs from each fragment then add the overall top-k diffs to the gradient bounds
-        for i in range(len(grads_n)):
-            # we pop, process and del each one by one to save memory
-            grads_diffs_l_i = grads_diffs_l.pop(0)
-            grads_diffs_l_i = torch.cat(grads_diffs_l_i, dim=0)
-            grads_l[i] += torch.topk(grads_diffs_l_i, k_poison, dim=0, largest=False)[0].sum(dim=0)
-            del grads_diffs_l_i
-            grads_diffs_u_i = grads_diffs_u.pop(0)
-            grads_diffs_u_i = torch.cat(grads_diffs_u_i, dim=0)
-            grads_u[i] += torch.topk(grads_diffs_u_i, k_poison, dim=0)[0].sum(dim=0)
-            del grads_diffs_u_i
-
-        # normalise each by the batchsize and apply the step with the optimizer
+        # get the bounds on the descent direction, validate them, and apply the optimizer update
         batchsize = batch.size(0) if batch_clean is None else batch.size(0) + batch_clean.size(0)
-        grads_l = [g / batchsize for g in grads_l]
-        grads_n = [g / batchsize for g in grads_n]
-        grads_u = [g / batchsize for g in grads_u]
-        interval_arithmetic.validate_interval(grads_l, grads_u, grads_n, msg=f"grad bounds, batch {n}")
-        optimizer.step(grads_l, grads_n, grads_u)
+        update_l, update_n, update_u = gradient_accumulator.concretize_gradient_update(batchsize)
+        interval_arithmetic.validate_interval(update_l, update_u, update_n, msg=f"grad bounds, batch {n}")
+        optimizer.step(update_l, update_n, update_u)
         config.on_iter_end_callback(bounded_model)
 
     if val_iterator is not None:
